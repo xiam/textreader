@@ -19,20 +19,25 @@ func (p Position) String() string {
 	return fmt.Sprintf("%d:%d", p.Line, p.Column)
 }
 
+func newPosition() Position {
+	return Position{
+		Line: 1,
+	}
+}
+
 // TextReader reads from an io.Reader and keeps track of the current position.
 type TextReader struct {
 	br *bufio.Reader
 
-	column uint64
-	line   uint64
-	offset uint64
+	position     Position
+	lastPosition *Position
 }
 
 // NewReader returns a new TextReader that reads from r.
 func NewReader(r io.Reader) *TextReader {
 	return &TextReader{
-		br:   bufio.NewReader(r),
-		line: 1,
+		br:       bufio.NewReader(r),
+		position: newPosition(),
 	}
 }
 
@@ -40,33 +45,57 @@ func NewReader(r io.Reader) *TextReader {
 // and its size in bytes.
 func (t *TextReader) ReadRune() (r rune, size int, err error) {
 	r, size, err = t.br.ReadRune()
-	t.offset += uint64(size)
+
+	t.lastPosition = &Position{
+		Column: t.position.Column,
+		Line:   t.position.Line,
+		Offset: t.position.Offset,
+	}
+
+	t.position.Offset += uint64(size)
 
 	if err != nil {
 		return
 	}
 
 	if r == newLine {
-		t.line++
-		t.column = 0
+		t.position.Line++
+		t.position.Column = 0
 	} else {
-		t.column++
+		t.position.Column++
 	}
 
 	return r, size, nil
 }
 
+// UnreadRune unreads the last rune.
+func (t *TextReader) UnreadRune() error {
+	if t.lastPosition == nil {
+		return bufio.ErrInvalidUnreadRune
+	}
+
+	err := t.br.UnreadRune()
+	if err != nil {
+		return err
+	}
+
+	t.position = *t.lastPosition
+	t.lastPosition = nil
+
+	return nil
+}
+
 // Read reads up to len(p) bytes into p and returns the number of bytes read.
 func (t *TextReader) Read(p []byte) (n int, err error) {
 	n, err = t.br.Read(p)
-	t.offset += uint64(n)
+	t.position.Offset += uint64(n)
 
 	for _, b := range p {
 		if b == newLine {
-			t.line++
-			t.column = 0
+			t.position.Line++
+			t.position.Column = 0
 		} else {
-			t.column++
+			t.position.Column++
 		}
 	}
 
@@ -75,9 +104,5 @@ func (t *TextReader) Read(p []byte) (n int, err error) {
 
 // Position returns the current position of the reader.
 func (t *TextReader) Position() Position {
-	return Position{
-		Column: t.column,
-		Line:   t.line,
-		Offset: t.offset,
-	}
+	return t.position
 }

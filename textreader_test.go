@@ -72,4 +72,22 @@ func TestTestReader(t *testing.T) {
 		assert.Equal(t, uint64(5), endPos.Column)
 		assert.Equal(t, uint64(5), endPos.Offset)
 	})
+
+	t.Run("UnreadRune", func(t *testing.T) {
+		tr := textreader.NewReader(strings.NewReader(data))
+
+		r, _, err := tr.ReadRune()
+		require.NoError(t, err)
+
+		assert.Equal(t, 'f', r)
+		assert.Equal(t, "1:1", tr.Position().String())
+
+		err = tr.UnreadRune()
+		require.NoError(t, err)
+
+		assert.Equal(t, "1:0", tr.Position().String())
+
+		err = tr.UnreadRune()
+		require.Error(t, err)
+	})
 }
