@@ -23,8 +23,9 @@ type TextReader struct {
 
 	capacity int
 	buf      []byte
-	r        int
-	w        int
+
+	r int
+	w int
 }
 
 // New returns a new TextReader that reads from r.
@@ -36,6 +37,7 @@ func NewWithCapacity(r io.Reader, capacity int) *TextReader {
 	if capacity < utf8.UTFMax {
 		capacity = utf8.UTFMax
 	}
+
 	return &TextReader{
 		br:           bufio.NewReader(r),
 		buf:          make([]byte, 0, capacity),
@@ -80,6 +82,7 @@ func (t *TextReader) ReadRune() (r rune, size int, err error) {
 	if err := t.fillAtLeast(utf8.UTFMax); err != nil {
 		return 0, 0, err
 	}
+
 	if t.r >= t.w {
 		return 0, 0, io.EOF
 	}
@@ -123,7 +126,6 @@ func (t *TextReader) UnreadRune() error {
 
 // Read reads up to len(p) bytes into p and returns the number of bytes read.
 func (t *TextReader) Read(p []byte) (n int, err error) {
-
 	if len(p) >= t.capacity {
 		// read directly into p
 		n, err = t.br.Read(p)
@@ -165,6 +167,7 @@ func (t *TextReader) ReadByte() (byte, error) {
 	if err := t.fillAtLeast(1); err != nil {
 		return 0, err
 	}
+
 	if t.r >= t.w {
 		return 0, io.EOF
 	}
