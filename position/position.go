@@ -11,26 +11,33 @@ const newLine = '\n'
 type Position struct {
 	mu sync.Mutex
 
-	lines  []int
-	offset int
+	colsPerLine []int
+	offset      int
 }
 
 func New() *Position {
 	return &Position{
-		lines: []int{0},
-		mu:    sync.Mutex{},
+		mu: sync.Mutex{},
 	}
 }
 
 func (p *Position) line() int {
-	return len(p.lines)
+	zl := len(p.colsPerLine)
+	if zl < 1 {
+		return 1
+	}
+
+	return zl
 }
 
 func (p *Position) column() int {
-	if len(p.lines) == 0 {
+	zl := len(p.colsPerLine)
+
+	if zl == 0 {
 		return 0
 	}
-	return p.lines[len(p.lines)-1]
+
+	return p.colsPerLine[zl-1]
 }
 
 func (p *Position) String() string {
@@ -65,11 +72,18 @@ func (p *Position) Scan(in []byte) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	zl := len(p.colsPerLine) - 1
+	if zl < 0 {
+		p.colsPerLine = []int{0}
+		zl = 0
+	}
+
 	for _, b := range in {
 		if b == newLine {
-			p.lines = append(p.lines, 0)
+			p.colsPerLine = append(p.colsPerLine, 0)
+			zl++
 		} else {
-			p.lines[len(p.lines)-1]++
+			p.colsPerLine[zl]++
 		}
 		p.offset++
 	}
@@ -79,7 +93,11 @@ func (p *Position) Reset() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	p.lines = []int{0}
+	p.reset()
+}
+
+func (p *Position) reset() {
+	p.colsPerLine = p.colsPerLine[:0]
 	p.offset = 0
 }
 
@@ -87,39 +105,60 @@ func (p *Position) Copy() Position {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	return Position{}
+	newPos := Position{
+		colsPerLine: make([]int, len(p.colsPerLine)),
+		offset:      p.offset,
+	}
+
+	copy(newPos.colsPerLine, p.colsPerLine)
+
+	return newPos
 }
 
-func (p *Position) Rewind(n int) error {
+func (p *Position) Rewind(positions int) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if n < 0 {
-		return fmt.Errorf("cannot rewind by a negative number")
+	switch {
+	case positions == 0:
+		return nil // no-op
+	case positions < 0:
+		return fmt.Errorf("cannot rewind by a negative number: %d", positions)
+	case positions > p.offset:
+		return fmt.Errorf("cannot rewind by %d, only %d available", positions, p.offset)
+	case positions == p.offset:
+		p.reset()
+		return nil
 	}
 
-	p.offset -= n
-	if p.offset < 0 {
-		p.offset = 0
-	}
+	rewind := 0
+	lastLine := len(p.colsPerLine) - 1
 
-	for n > 0 {
-		ll := len(p.lines) - 1
-		if ll < 0 {
+	for rewind < positions {
+		columns := p.colsPerLine[lastLine]
+		remaining := positions - rewind
+
+		if remaining <= columns {
 			break
 		}
-		if n >= p.lines[ll] {
-			n = n - p.lines[ll] - 1
-			p.lines = p.lines[:ll]
-		} else {
-			p.lines[ll] = p.lines[ll] - n
-			n = 0
+
+		rewind += columns
+		lastLine--
+
+		if lastLine >= 0 {
+			rewind += 1 // for the newline
 		}
 	}
 
-	if len(p.lines) == 0 {
-		p.lines = []int{0}
+	if lastLine >= 0 {
+		remaining := positions - rewind
+		if p.colsPerLine[lastLine] >= remaining {
+			p.colsPerLine[lastLine] -= remaining
+			p.colsPerLine = p.colsPerLine[:lastLine+1]
+			p.offset -= positions
+			return nil
+		}
 	}
 
-	return nil
+	return fmt.Errorf("rewind failed, wanted %d, had %d", positions, rewind)
 }

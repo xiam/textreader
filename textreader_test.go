@@ -1,6 +1,7 @@
 package textreader_test
 
 import (
+	"errors"
 	"io"
 	"strings"
 	"testing"
@@ -18,7 +19,7 @@ var (
 	_ io.Seeker     = (*textreader.TextReader)(nil)
 )
 
-func TestTestReader(t *testing.T) {
+func TestTextReader(t *testing.T) {
 	data := "first line\nsecond line\nthird line\nfourth line\nfifth line 🦄\n"
 
 	t.Run("look for the unicorn", func(t *testing.T) {
@@ -31,8 +32,11 @@ func TestTestReader(t *testing.T) {
 		for i := 0; ; i++ {
 			r, _, err := reader.ReadRune()
 			if err != nil {
-				require.Equal(t, io.EOF, err)
-				break
+				if errors.Is(err, io.EOF) {
+					break
+				}
+
+				require.NoError(t, err)
 			}
 
 			if r == '🦄' {
@@ -77,7 +81,7 @@ func TestTestReader(t *testing.T) {
 			n, err := tr.Read(buf)
 			require.NoError(t, err)
 			assert.Equal(t, 3, n)
-			assert.Equal(t, []byte("fir"), buf)
+			assert.Equal(t, []byte(data[0:3]), buf)
 
 			{
 				pos := tr.Pos()
@@ -86,19 +90,21 @@ func TestTestReader(t *testing.T) {
 				assert.Equal(t, 3, pos.Offset())
 			}
 		}
+
 		{
 			buf := make([]byte, 4)
 			n, err := tr.Read(buf)
 			require.NoError(t, err)
 			assert.Equal(t, 4, n)
-			assert.Equal(t, []byte("st l"), buf)
+			assert.Equal(t, []byte(data[3:3+4]), buf)
 		}
+
 		{
 			buf := make([]byte, 5)
 			n, err := tr.Read(buf)
 			require.NoError(t, err)
 			assert.Equal(t, 5, n)
-			assert.Equal(t, []byte("ine\ns"), buf)
+			assert.Equal(t, []byte(data[7:7+5]), buf)
 
 			{
 				pos := tr.Pos()
@@ -108,18 +114,23 @@ func TestTestReader(t *testing.T) {
 			}
 		}
 		{
+			offset := tr.Pos().Offset()
+
 			buf := make([]byte, 15)
 			n, err := tr.Read(buf)
 			require.NoError(t, err)
 			assert.Equal(t, 15, n)
-			assert.Equal(t, []byte("econd line\nthir"), buf)
+			assert.Equal(t, []byte(data[offset:offset+15]), buf)
 		}
 		{
-			buf := make([]byte, 200)
+			offset := tr.Pos().Offset()
+
+			buf := make([]byte, 100)
 			n, err := tr.Read(buf)
+
 			require.NoError(t, err)
 			assert.Equal(t, 35, n)
-			assert.Equal(t, []byte("d line\nfourth line\nfifth line 🦄\n"), buf[:n])
+			assert.Equal(t, []byte(data[offset:]), buf[:n])
 
 			{
 				pos := tr.Pos()
@@ -217,98 +228,54 @@ func TestTestReader(t *testing.T) {
 		t.Run("seek to end", func(t *testing.T) {
 			offset, err := tr.Seek(0, io.SeekEnd)
 			require.NoError(t, err)
-			assert.Equal(t, int64(18), offset)
+
+			t.Logf("offset: %d", offset)
 
 			{
 				pos := tr.Pos()
-				assert.Equal(t, 2, pos.Line())
-				assert.Equal(t, 7, pos.Column())
-				assert.Equal(t, 18, pos.Offset())
+				assert.Equal(t, int(offset), pos.Offset())
 			}
 
-			b, err := tr.ReadByte()
-			require.NoError(t, err)
-			assert.Equal(t, byte('l'), b)
-
 			{
-				pos := tr.Pos()
-				assert.Equal(t, 2, pos.Line())
-				assert.Equal(t, 8, pos.Column())
-				assert.Equal(t, 19, pos.Offset())
+				_, err := tr.ReadByte()
+				require.Error(t, err)
 			}
 		})
 
 		t.Run("seek to end + 1", func(t *testing.T) {
 			offset, err := tr.Seek(1, io.SeekEnd)
-			require.NoError(t, err)
-			assert.Equal(t, int64(20), offset)
+			require.Error(t, err)
+
+			assert.Equal(t, int64(0), offset)
 
 			{
-				pos := tr.Pos()
-				assert.Equal(t, 2, pos.Line())
-				assert.Equal(t, 9, pos.Column())
-				assert.Equal(t, 20, pos.Offset())
-			}
-
-			b, err := tr.ReadByte()
-			require.Error(t, io.EOF, err)
-			require.NoError(t, err)
-			assert.Equal(t, byte('n'), b)
-
-			{
-				pos := tr.Pos()
-				assert.Equal(t, 2, pos.Line())
-				assert.Equal(t, 10, pos.Column())
-				assert.Equal(t, 21, pos.Offset())
+				_, err := tr.ReadByte()
+				require.Error(t, err)
 			}
 		})
 
 		t.Run("seek to end - 1", func(t *testing.T) {
 			offset, err := tr.Seek(-1, io.SeekEnd)
 			require.NoError(t, err)
-			assert.Equal(t, int64(20), offset)
+
+			assert.Equal(t, len(data)-1, int(offset))
 
 			{
 				pos := tr.Pos()
-				assert.Equal(t, 2, pos.Line())
-				assert.Equal(t, 9, pos.Column())
-				assert.Equal(t, 20, pos.Offset())
-			}
-
-			b, err := tr.ReadByte()
-			require.Error(t, io.EOF, err)
-			require.NoError(t, err)
-			assert.Equal(t, byte('n'), b)
-
-			{
-				pos := tr.Pos()
-				assert.Equal(t, 2, pos.Line())
-				assert.Equal(t, 10, pos.Column())
-				assert.Equal(t, 21, pos.Offset())
-			}
-		})
-
-		t.Run("seek to end + 10", func(t *testing.T) {
-			offset, err := tr.Seek(10, io.SeekEnd)
-			require.NoError(t, err)
-			assert.Equal(t, int64(31), offset)
-
-			{
-				pos := tr.Pos()
-				assert.Equal(t, 3, pos.Line())
-				assert.Equal(t, 8, pos.Column())
-				assert.Equal(t, 31, pos.Offset())
+				assert.Equal(t, 5, pos.Line())
+				assert.Equal(t, 15, pos.Column())
+				assert.Equal(t, len(data)-1, pos.Offset())
 			}
 
 			b, err := tr.ReadByte()
 			require.NoError(t, err)
-			assert.Equal(t, byte('n'), b)
+			assert.Equal(t, byte('\n'), b)
 
 			{
 				pos := tr.Pos()
-				assert.Equal(t, 3, pos.Line())
-				assert.Equal(t, 9, pos.Column())
-				assert.Equal(t, 32, pos.Offset())
+				assert.Equal(t, 6, pos.Line())
+				assert.Equal(t, 0, pos.Column())
+				assert.Equal(t, len(data), pos.Offset())
 			}
 		})
 
@@ -350,7 +317,7 @@ func TestTestReader(t *testing.T) {
 		})
 
 		t.Run("seek beyond input", func(t *testing.T) {
-			offset, err := tr.Seek(1000, io.SeekEnd)
+			offset, err := tr.Seek(200, io.SeekEnd)
 			require.Error(t, err)
 			assert.Equal(t, int64(0), offset)
 

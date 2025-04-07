@@ -18,7 +18,14 @@ func TestPosition(t *testing.T) {
 		assert.Equal(t, 0, pos.Column())
 		assert.Equal(t, 2, pos.Line())
 
-		err := pos.Rewind(1)
+		err := pos.Rewind(0)
+		require.NoError(t, err)
+
+		assert.Equal(t, 14, pos.Offset())
+		assert.Equal(t, 0, pos.Column())
+		assert.Equal(t, 2, pos.Line())
+
+		err = pos.Rewind(1)
 		require.NoError(t, err)
 
 		assert.Equal(t, 13, pos.Offset())
@@ -33,6 +40,13 @@ func TestPosition(t *testing.T) {
 		assert.Equal(t, 1, pos.Line())
 
 		err = pos.Rewind(100)
+		require.Error(t, err)
+
+		assert.Equal(t, 8, pos.Offset())
+		assert.Equal(t, 8, pos.Column())
+		assert.Equal(t, 1, pos.Line())
+
+		err = pos.Rewind(pos.Offset())
 		require.NoError(t, err)
 
 		assert.Equal(t, 0, pos.Offset())
@@ -81,7 +95,7 @@ func TestPosition(t *testing.T) {
 		assert.Equal(t, 1, pos.Line())
 
 		err = pos.Rewind(1)
-		require.NoError(t, err)
+		require.Error(t, err)
 
 		assert.Equal(t, 0, pos.Offset())
 		assert.Equal(t, 0, pos.Column())
@@ -108,4 +122,24 @@ func TestPosition(t *testing.T) {
 		require.Error(t, err)
 	}
 
+	{
+		pos := position.New()
+
+		line := "🦄\n"
+
+		pos.Scan([]byte(line))
+		assert.Equal(t, len(line), pos.Offset())
+		assert.Equal(t, 0, pos.Column())
+		assert.Equal(t, 2, pos.Line())
+	}
+
+	{
+		pos := position.New()
+
+		line := "first line\nsecond line\nthird line\nfourth line\nfifth line 🦄\n"
+		pos.Scan([]byte(line))
+		assert.Equal(t, len(line), pos.Offset())
+		assert.Equal(t, 0, pos.Column())
+		assert.Equal(t, 6, pos.Line())
+	}
 }

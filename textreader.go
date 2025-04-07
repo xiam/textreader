@@ -10,7 +10,17 @@ import (
 	"github.com/xiam/textreader/position"
 )
 
-const defaultCapacity = 1024 * 1024 * 4 // TODO: MB enough? find a good default capacity
+const (
+	defaultCapacity = 64 * 1024
+
+	shortReadSize = 1024
+)
+
+var (
+	ErrBufferTooSmall  = errors.New("buffer too small")
+	ErrInvalidUTF8     = errors.New("invalid UTF-8 encoding")
+	ErrSeekOutOfBuffer = errors.New("seek out of buffer")
+)
 
 // TextReader reads from an io.Reader and keeps track of the current position.
 type TextReader struct {
@@ -49,27 +59,53 @@ func NewWithCapacity(r io.Reader, capacity int) *TextReader {
 }
 
 func (t *TextReader) fillAtLeast(n int) error {
-	if n > t.capacity {
-		return errors.New("buffer too small")
+	if n < 0 {
+		return fmt.Errorf("invalid size: %d", n)
 	}
 
-	// if not enough data in buffer, read more
-	if t.r+n > t.w {
-		slice := make([]byte, n)
-		n, err := t.br.Read(slice)
-		if err != nil && err != io.EOF {
+	if n == 0 {
+		// nothing to do
+		return nil
+	}
+
+	if n > t.capacity {
+		// the requested read is larger than the buffer this is not allowed
+		return ErrBufferTooSmall
+	}
+
+	// if we already have enough data in the buffer, just return
+	if n <= t.w-t.r {
+		return nil
+	}
+
+	// the next read will be beyond the buffer, so we need to shrink the buffer
+	// to the current read position to free up space
+	if t.r+n >= t.capacity {
+		t.buf = t.buf[t.r:t.w]
+		t.w = t.w - t.r
+		t.r = 0
+	}
+
+	needed := n - (t.w - t.r)
+
+	for t.w < t.capacity && needed > 0 {
+		shortRead := make([]byte, shortReadSize)
+		bytesRead, err := t.br.Read(shortRead)
+
+		t.buf = append(t.buf, shortRead[:bytesRead]...)
+		t.w += bytesRead
+		needed -= bytesRead
+
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return io.EOF
+			}
 			return err
 		}
+	}
 
-		// shrink buffer to push new data
-		if t.w+n > t.capacity {
-			t.buf = t.buf[t.r:t.w]
-			t.w = t.w - t.r
-			t.r = 0
-		}
-
-		t.buf = append(t.buf, slice[:n]...)
-		t.w += n
+	if needed > 0 {
+		return io.ErrUnexpectedEOF
 	}
 
 	return nil
@@ -80,37 +116,47 @@ func (t *TextReader) fillAtLeast(n int) error {
 func (t *TextReader) ReadRune() (r rune, size int, err error) {
 	// increase buffer size if necessary
 	if err := t.fillAtLeast(utf8.UTFMax); err != nil {
-		return 0, 0, err
+		// we can tolerate EOF here, since we may be at the end of the stream and
+		// the next character may not be a valid UTF-8 character
+		if !errors.Is(err, io.EOF) {
+			return 0, 0, err
+		}
 	}
 
 	if t.r >= t.w {
+		// we're at the end of the buffer
 		return 0, 0, io.EOF
 	}
 
-	t.lastRuneSize = -1
-	t.lastByte = -1
-
-	// read rune from buffer
+	// read next byte from buffer as a rune
 	r, size = rune(t.buf[t.r]), 1
 	if r >= utf8.RuneSelf {
+		if t.r+utf8.UTFMax > t.w {
+			// we don't have enough data in the buffer to decode a full UTF-8
+			return 0, 0, io.EOF
+		}
+
+		// decode UTF-8 rune
 		r, size = utf8.DecodeRune(t.buf[t.r : t.r+utf8.UTFMax])
 		if r == utf8.RuneError {
-			return 0, 0, errors.New("invalid UTF-8 encoding")
+			return 0, 0, ErrInvalidUTF8
 		}
 	}
 
 	// update buffer position
-	t.pos.Scan(t.buf[t.r : t.r+size])
-
 	t.lastRuneSize = size
+	t.pos.Scan(t.buf[t.r : t.r+t.lastRuneSize])
+
 	t.r += t.lastRuneSize
+
+	t.lastByte = -1
 
 	return r, size, nil
 }
 
 // UnreadRune unreads the last rune.
 func (t *TextReader) UnreadRune() error {
-	if t.lastRuneSize < 0 || t.w < t.lastRuneSize {
+	if t.lastRuneSize < 0 || t.r < t.lastRuneSize {
 		return bufio.ErrInvalidUnreadRune
 	}
 
@@ -119,48 +165,84 @@ func (t *TextReader) UnreadRune() error {
 	}
 
 	t.r -= t.lastRuneSize
+
 	t.lastRuneSize = -1
 	t.lastByte = -1
+
 	return nil
 }
 
 // Read reads up to len(p) bytes into p and returns the number of bytes read.
 func (t *TextReader) Read(p []byte) (n int, err error) {
-	if len(p) >= t.capacity {
-		// read directly into p
-		n, err = t.br.Read(p)
+	needed, filled := len(p), 0
 
-		t.pos.Scan(p[:n])
+	for filled < needed {
+		if t.r < t.w {
+			// we have data in the buffer. move as much data as possible from it to
+			// `p`
+			buffered := t.w - t.r
 
-		// copy last bytes from p to buffer (up to capacity)
-		w := t.capacity
-		if w > n {
-			w = n
+			n = needed - filled
+			if n > buffered {
+				n = buffered
+			}
+
+			copy(p[filled:], t.buf[t.r:t.r+n])
+			t.pos.Scan(t.buf[t.r : t.r+n])
+			t.r += n
+
+			filled += n
 		}
 
-		copy(t.buf, p[n-w:n])
-		t.r = 0
-		t.w = w
+		if filled >= needed {
+			t.lastRuneSize = -1
+			t.lastByte = -1
 
-		t.lastRuneSize = -1
-		t.lastByte = int(p[n-1])
+			if t.r > 0 {
+				t.lastByte = int(t.buf[t.r-1])
+			}
 
-		return n, err
+			return filled, nil
+		}
+
+		// the size of the requested read is larger than the buffer
+		if needed > t.capacity {
+			// read remaining data directly into p
+			n, err = t.br.Read(p[filled:])
+			if err != nil {
+				if errors.Is(err, io.EOF) && filled == 0 {
+					return 0, fmt.Errorf("read: %v", err)
+				}
+			}
+
+			t.pos.Scan(p[filled : filled+n])
+			n = n + filled
+
+			// reset the buffer since we dumped it all into p
+			t.r = 0
+			t.w = 0
+
+			t.lastRuneSize = -1
+			t.lastByte = -1
+
+			if n > 0 {
+				t.lastByte = int(p[n-1])
+			}
+
+			return n, nil
+		}
+
+		// fill the buffer with more data for the next read
+		if err := t.fillAtLeast(needed - filled); err != nil {
+			if errors.Is(err, io.EOF) {
+				return filled, nil
+			}
+
+			return filled, err
+		}
 	}
 
-	// use buffer
-	if err := t.fillAtLeast(len(p)); err != nil {
-		return 0, err
-	}
-
-	n = copy(p, t.buf[t.r:t.w])
-	t.pos.Scan(t.buf[t.r:t.w])
-	t.r += n
-
-	t.lastRuneSize = -1
-	t.lastByte = int(p[n-1])
-
-	return n, nil
+	return filled, nil
 }
 
 func (t *TextReader) ReadByte() (byte, error) {
@@ -218,44 +300,47 @@ func (t *TextReader) Seek(offset int64, whence int) (int64, error) {
 		return 0, errors.New("negative position")
 	}
 
-	// if abs is in buffer, just move r back
-	if abs <= t.w {
-		if abs > t.r {
-			t.pos.Scan(t.buf[t.r:abs])
-		} else {
-			if err := t.pos.Rewind(t.r - abs); err != nil {
-				return 0, fmt.Errorf("rewind: %v", err)
-			}
-		}
+	if abs > t.capacity {
+		return 0, errors.New("position out of range")
+	}
 
-		t.r = abs
-		t.lastRuneSize = -1
-		t.lastByte = -1
+	// calculate the relative position
+	rel := abs - t.pos.Offset()
+	if rel == 0 {
 		return int64(abs), nil
 	}
 
-	// if abs is beyond buffer, read more data
-	if err := t.fillAtLeast(abs - t.w); err != nil {
-		return 0, err
-	}
+	if rel > 0 {
 
-	if abs <= t.w {
-		if abs > t.r {
-			t.pos.Scan(t.buf[t.r:abs])
-		} else {
-			if err := t.pos.Rewind(t.r - abs); err != nil {
-				return 0, fmt.Errorf("rewind: %v", err)
+		if t.r+rel >= t.w {
+			// we need to read more data
+			if err := t.fillAtLeast((t.r + rel) - t.w); err != nil {
+				if errors.Is(err, io.EOF) {
+					return 0, ErrSeekOutOfBuffer
+				}
+				return 0, fmt.Errorf("fillAtLeast: %w", err)
 			}
 		}
 
-		t.r = abs
+		t.pos.Scan(t.buf[t.r : t.r+rel])
+
+		t.r += rel
 		t.lastRuneSize = -1
 		t.lastByte = -1
 
 		return int64(abs), nil
 	}
 
-	return 0, errors.New("seek out of buffer")
+	if t.r+rel < 0 {
+		return 0, ErrSeekOutOfBuffer
+	}
+
+	t.r += rel
+	if err := t.pos.Rewind(-rel); err != nil {
+		return int64(abs), fmt.Errorf("Rewind: %w", err)
+	}
+
+	return int64(abs), nil
 }
 
 func (t *TextReader) Pos() *position.Position {
