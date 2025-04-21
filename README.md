@@ -1,7 +1,5 @@
-# TextReader (draft)
+# TextReader
 
-`TextReader` provides a reader for unicode text files that keeps track of the
-position of the text that has been read. This is useful when parsing text
-files, as the exact position of the text that has been just read is useful for
-debugging any parse errors.
-
+The `TextReader` package reads Unicode text files while tracking the position
+of the reader. This helps with parsing text files by showing exactly where
+errors occur, making debugging easier.
