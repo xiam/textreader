@@ -352,7 +352,7 @@ func (t *TextReader) Seek(offset int64, whence int) (int64, error) {
 
 	t.r += rel
 	if err := t.pos.Rewind(-rel); err != nil {
-		return int64(abs), fmt.Errorf("Rewind: %w", err)
+		return int64(abs), fmt.Errorf("pos.Rewind: %w", err)
 	}
 
 	t.lastRuneSize = -1

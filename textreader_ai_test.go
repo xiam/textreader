@@ -80,7 +80,6 @@ func (s *TextReaderAITestSuite) TestEmptyInput() {
 	b, err := tr.ReadByte()
 	s.assert.ErrorIs(err, io.EOF)
 	s.assert.Equal(byte(0), b)
-	return
 
 	buf := make([]byte, 10)
 	n, err := tr.Read(buf)
@@ -579,6 +578,7 @@ func (s *TextReaderAITestSuite) TestSeek_Basic() {
 	// SeekStart to beginning
 	newPos, err = tr.Seek(0, io.SeekStart)
 	s.require.Error(err, "we don't have enough data to seek to 0, buffer has been already shrunk")
+	s.assert.EqualValues(0, newPos)
 
 	r, _, _ = tr.ReadRune()
 	s.assert.Equal('9', r)
