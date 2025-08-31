@@ -23,7 +23,10 @@ var (
 	ErrSeekOutOfBuffer = errors.New("seek out of buffer")
 )
 
-// TextReader reads from an io.Reader and keeps track of the current position.
+// TextReader reads from an io.Reader, buffering data and keeping track of the
+// current position (line, column, and offset) in the text stream. It supports
+// seeking only within the currently buffered data, which is good enough for
+// giving context of the text around the current read position.
 type TextReader struct {
 	br io.Reader
 	mu sync.Mutex
@@ -69,22 +72,22 @@ func (t *TextReader) fillAtLeast(n int) (bool, error) {
 	}
 
 	if n == 0 {
-		// nothing to do
+		// Nothing to do.
 		return true, nil
 	}
 
 	if n > t.capacity {
-		// the requested read is larger than the buffer this is not allowed
+		// The requested read is larger than the buffer this is not allowed.
 		return false, ErrBufferTooSmall
 	}
 
-	// if we already have enough data in the buffer, just return
+	// If we already have enough data in the buffer, just return.
 	if n <= t.w-t.r {
 		return true, nil
 	}
 
-	// the next read will be beyond the buffer, so we need to shrink the buffer
-	// to the current read position to free up space
+	// The next read will be beyond the buffer, so we need to shrink the buffer
+	// to the current read position to free up space.
 	if t.r+n >= t.capacity {
 
 		copy(t.buf[0:], t.buf[t.r:t.w])
@@ -176,7 +179,7 @@ func (t *TextReader) UnreadRune() error {
 
 // Read reads up to len(p) bytes into p and returns the number of bytes read.
 // For reads larger than the buffer capacity, it will read directly from the
-// underlying reader to optimize performance.
+// underlying reader, and discard any previously buffered data.
 func (t *TextReader) Read(p []byte) (n int, err error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -189,7 +192,7 @@ func (t *TextReader) Read(p []byte) (n int, err error) {
 		buffered := t.w - t.r
 
 		if buffered > 0 {
-			// we have data some in the buffer. move as much data as possible from it
+			// We have data some in the buffer. move as much data as possible from it
 			// to `p`
 
 			n = needed - filled
@@ -208,16 +211,16 @@ func (t *TextReader) Read(p []byte) (n int, err error) {
 			break
 		}
 
-		// the size of the requested read is larger than the buffer, there's no way
+		// The size of the requested read is larger than the buffer, there's no way
 		// we can handle this
 		if needed-filled > t.capacity {
 
-			// read remaining data directly into p
+			// Read remaining data directly into p
 			n, readErr = t.br.Read(p[filled:])
 
 			t.pos.Scan(p[filled : filled+n])
 
-			// reset the buffer since we dumped it all into
+			// Reset the buffer since we dumped it all into
 			t.r = 0
 			t.w = 0
 
@@ -229,7 +232,7 @@ func (t *TextReader) Read(p []byte) (n int, err error) {
 			break
 		}
 
-		// fill the buffer with more data for the next read
+		// Fill the buffer with more data for the next read
 		_, readErr = t.fillAtLeast(needed - filled)
 	}
 
@@ -261,7 +264,7 @@ func (t *TextReader) ReadByte() (byte, error) {
 		return 0, io.EOF
 	}
 
-	// read byte from buffer
+	// Read byte from buffer
 	b := t.buf[t.r]
 	t.pos.Scan(t.buf[t.r : t.r+1])
 	t.r++
