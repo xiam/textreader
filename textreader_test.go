@@ -286,7 +286,8 @@ func TestTextReader(t *testing.T) {
 			{
 				pos := tr.Pos()
 				assert.Equal(t, 5, pos.Line())
-				assert.Equal(t, 15, pos.Column())
+				// "fifth line 🦄" = 11 chars + 1 emoji = 12 runes (Column counts runes, not bytes)
+				assert.Equal(t, 12, pos.Column())
 				assert.Equal(t, len(data)-1, pos.Offset())
 			}
 
@@ -825,18 +826,18 @@ func TestPositionScanRewind(t *testing.T) {
 	assert.Equal(t, 2, pos.Line())
 	assert.Equal(t, 5, pos.Column())
 
-	err := pos.Rewind(3)
+	err := pos.Rewind(3, 3)
 	assert.NoError(t, err)
 	assert.Equal(t, len(text1)-3, pos.Offset())
 	assert.Equal(t, 2, pos.Line())
 	assert.Equal(t, 2, pos.Column())
 
-	err = pos.Rewind(6)
+	err = pos.Rewind(6, 6)
 	assert.NoError(t, err)
 	assert.Equal(t, len(text1)-3-6, pos.Offset())
 	assert.Equal(t, 1, pos.Line())
 	assert.Equal(t, 2, pos.Column())
 
-	err = pos.Rewind(10)
+	err = pos.Rewind(10, 10)
 	assert.Error(t, err, "Rewinding past beginning should return error")
 }

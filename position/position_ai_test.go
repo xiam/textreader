@@ -119,7 +119,7 @@ func TestCopy(t *testing.T) {
 func TestRewind_Negative(t *testing.T) {
 	p := position.New()
 	p.Scan([]byte("abc"))
-	err := p.Rewind(-1)
+	err := p.Rewind(-1, -1)
 	assert.Error(t, err, "Should return error for negative rewind")
 	assertPositionState(t, p, 1, 3, 3, "State should be unchanged after negative rewind attempt")
 }
@@ -127,7 +127,7 @@ func TestRewind_Negative(t *testing.T) {
 func TestRewind_Zero(t *testing.T) {
 	p := position.New()
 	p.Scan([]byte("abc"))
-	err := p.Rewind(0)
+	err := p.Rewind(0, 0)
 	assert.NoError(t, err)
 	assertPositionState(t, p, 1, 3, 3, "State should be unchanged after rewind 0")
 }
@@ -135,7 +135,7 @@ func TestRewind_Zero(t *testing.T) {
 func TestRewind_WithinLine(t *testing.T) {
 	p := position.New()
 	p.Scan([]byte("abcdef")) // L1, C6, O6
-	err := p.Rewind(2)       // Rewind to 'd'
+	err := p.Rewind(2, 2)    // Rewind to 'd'
 	assert.NoError(t, err)
 	assertPositionState(t, p, 1, 4, 4, "Rewind within line")
 }
@@ -143,7 +143,7 @@ func TestRewind_WithinLine(t *testing.T) {
 func TestRewind_ToStartOfLine(t *testing.T) {
 	p := position.New()
 	p.Scan([]byte("abcdef")) // L1, C6, O6
-	err := p.Rewind(6)       // Rewind to beginning
+	err := p.Rewind(6, 6)    // Rewind to beginning
 	assert.NoError(t, err)
 	assertPositionState(t, p, 1, 0, 0, "Rewind to start of first line")
 
@@ -151,7 +151,7 @@ func TestRewind_ToStartOfLine(t *testing.T) {
 	p.Scan([]byte("line1\nline2")) // L2, C5, O11
 	assertPositionState(t, p, 2, 5, 11, "Initial state")
 
-	err = p.Rewind(5) // Rewind to start of line 2
+	err = p.Rewind(5, 5) // Rewind to start of line 2
 	assert.NoError(t, err)
 	assertPositionState(t, p, 2, 0, 6, "Rewind to start of second line")
 }
@@ -159,7 +159,7 @@ func TestRewind_ToStartOfLine(t *testing.T) {
 func TestRewind_AcrossOneNewline(t *testing.T) {
 	p := position.New()
 	p.Scan([]byte("line1\nline2")) // L2, C5, O11
-	err := p.Rewind(7)             // Rewind 5 for 'line2', 1 for '\n', 1 into 'line1' -> should be at 'e'
+	err := p.Rewind(7, 7)          // Rewind 5 for 'line2', 1 for '\n', 1 into 'line1' -> should be at 'e'
 	assert.NoError(t, err)
 	assertPositionState(t, p, 1, 4, 4, "Rewind across one newline")
 }
@@ -170,13 +170,13 @@ func TestRewind_AcrossMultipleNewlines(t *testing.T) {
 	// L2: "de"  (2) + \n (1) = 7
 	// L3: "fgh" (3)       = 10
 	p.Scan([]byte("abc\nde\nfgh")) // L3, C3, O10
-	err := p.Rewind(6)             // Rewind 3 ('fgh'), 1 ('\n'), 2 ('de') -> should be at start of L2
+	err := p.Rewind(6, 6)          // Rewind 3 ('fgh'), 1 ('\n'), 2 ('de') -> should be at start of L2
 	assert.NoError(t, err)
 	assertPositionState(t, p, 2, 0, 4, "Rewind across multiple newlines (to start of L2)")
 
 	p.Reset()
 	p.Scan([]byte("abc\nde\nfgh")) // L3, C3, O10
-	err = p.Rewind(8)              // Rewind 3 ('fgh'), 1 ('\n'), 2 ('de'), 1 ('\n'), 1 ('c') -> should be at 'b' on L1
+	err = p.Rewind(8, 8)           // Rewind 3 ('fgh'), 1 ('\n'), 2 ('de'), 1 ('\n'), 1 ('c') -> should be at 'b' on L1
 	assert.NoError(t, err)
 	assertPositionState(t, p, 1, 2, 2, "Rewind across multiple newlines (into L1)")
 }
@@ -186,13 +186,13 @@ func TestRewind_PastBeginning(t *testing.T) {
 	p.Scan([]byte("abc")) // L1, C3, O3
 	assertPositionState(t, p, 1, 3, 3)
 
-	err := p.Rewind(5) // Rewind more than available
+	err := p.Rewind(5, 5) // Rewind more than available
 	assert.Error(t, err)
 	assertPositionState(t, p, 1, 3, 3)
 
 	p.Reset()
 	p.Scan([]byte("abc\ndef")) // L2, C3, O7
-	err = p.Rewind(10)         // Rewind more than available
+	err = p.Rewind(10, 10)     // Rewind more than available
 	assert.Error(t, err)
 	assertPositionState(t, p, 2, 3, 7)
 }
@@ -202,19 +202,19 @@ func TestRewind_Sequential(t *testing.T) {
 	p.Scan([]byte("line1\nline22\nline333")) // L3, C7, O20
 	assertPositionState(t, p, 3, 7, 20, "Initial state")
 
-	err := p.Rewind(3) // Rewind within L3
+	err := p.Rewind(3, 3) // Rewind within L3
 	assert.NoError(t, err)
 	assertPositionState(t, p, 3, 4, 17, "After first rewind (within L3)")
 
-	err = p.Rewind(6) // Rewind 4 (L3), 1 (\n), 1 (L2) -> 'e' on L2
+	err = p.Rewind(6, 6) // Rewind 4 (L3), 1 (\n), 1 (L2) -> 'e' on L2
 	assert.NoError(t, err)
 	assertPositionState(t, p, 2, 5, 11, "After second rewind (into L2)")
 
-	err = p.Rewind(10) // Rewind 5 (L2), 1 (\n), 4 (L1) -> 'e' on L1
+	err = p.Rewind(10, 10) // Rewind 5 (L2), 1 (\n), 4 (L1) -> 'e' on L1
 	assert.NoError(t, err)
 	assertPositionState(t, p, 1, 1, 1, "After third rewind (into L1)")
 
-	err = p.Rewind(5) // Rewind past beginning
+	err = p.Rewind(5, 5) // Rewind past beginning
 	assert.Error(t, err)
 	assertPositionState(t, p, 1, 1, 1, "State should be unchanged after error")
 }
@@ -264,8 +264,8 @@ func TestConcurrency(t *testing.T) {
 					// Rewind a small amount to avoid excessive complexity/errors
 					// Be careful: Rewinding based on current offset read concurrently
 					// could be problematic itself. Rewind small fixed/random amounts.
-					rewindAmount := rand.Intn(5) + 1 // Rewind 1 to 5 chars
-					_ = p.Rewind(rewindAmount)       // Ignore error for simplicity in concurrent test
+					rewindAmount := rand.Intn(5) + 1    // Rewind 1 to 5 chars
+					_ = p.Rewind(rewindAmount, rewindAmount) // Ignore error for simplicity in concurrent test
 				case op < 85: // Copy (5% chance)
 					_ = p.Copy() // Just perform the copy, don't use result extensively here
 				case op < 90: // Reset (5% chance)

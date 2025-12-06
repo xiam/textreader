@@ -165,7 +165,7 @@ func (t *TextReader) UnreadRune() error {
 		return bufio.ErrInvalidUnreadRune
 	}
 
-	if err := t.pos.Rewind(t.lastRuneSize); err != nil {
+	if err := t.pos.Rewind(t.lastRuneSize, 1); err != nil {
 		return fmt.Errorf("rewind: %w", err)
 	}
 
@@ -286,7 +286,7 @@ func (t *TextReader) UnreadByte() error {
 		return bufio.ErrInvalidUnreadByte
 	}
 
-	if err := t.pos.Rewind(1); err != nil {
+	if err := t.pos.Rewind(1, 1); err != nil {
 		return fmt.Errorf("rewind: %w", err)
 	}
 
@@ -369,7 +369,9 @@ func (t *TextReader) Seek(offset int64, whence int) (int64, error) {
 		if newR < 0 {
 			return 0, ErrSeekOutOfBuffer
 		}
-		if err := t.pos.Rewind(-rel); err != nil {
+		// Count runes in the slice we're rewinding over
+		runeCount := utf8.RuneCount(t.buf[newR:t.r])
+		if err := t.pos.Rewind(-rel, runeCount); err != nil {
 			return 0, fmt.Errorf("pos.Rewind: %w", err)
 		}
 		t.r += rel
