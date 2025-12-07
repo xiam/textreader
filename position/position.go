@@ -3,6 +3,7 @@ package position
 import (
 	"fmt"
 	"sync"
+	"unicode/utf8"
 )
 
 const newLine = '\n'
@@ -11,8 +12,9 @@ const newLine = '\n'
 type Position struct {
 	mu sync.Mutex
 
-	colsPerLine []int
-	offset      int
+	runesPerLine []int // rune count per line (for Column)
+	bytesPerLine []int // byte count per line (for Rewind)
+	offset       int   // total byte offset
 }
 
 func New() *Position {
@@ -22,7 +24,7 @@ func New() *Position {
 }
 
 func (p *Position) line() int {
-	zl := len(p.colsPerLine)
+	zl := len(p.runesPerLine)
 	if zl < 1 {
 		return 1
 	}
@@ -31,13 +33,13 @@ func (p *Position) line() int {
 }
 
 func (p *Position) column() int {
-	zl := len(p.colsPerLine)
+	zl := len(p.runesPerLine)
 
 	if zl == 0 {
 		return 0
 	}
 
-	return p.colsPerLine[zl-1]
+	return p.runesPerLine[zl-1]
 }
 
 func (p *Position) String() string {
@@ -72,20 +74,25 @@ func (p *Position) Scan(in []byte) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	zl := len(p.colsPerLine) - 1
+	zl := len(p.runesPerLine) - 1
 	if zl < 0 {
-		p.colsPerLine = []int{0}
+		p.runesPerLine = []int{0}
+		p.bytesPerLine = []int{0}
 		zl = 0
 	}
 
-	for _, b := range in {
-		if b == newLine {
-			p.colsPerLine = append(p.colsPerLine, 0)
+	for len(in) > 0 {
+		r, size := utf8.DecodeRune(in)
+		if r == newLine {
+			p.runesPerLine = append(p.runesPerLine, 0)
+			p.bytesPerLine = append(p.bytesPerLine, 0)
 			zl++
 		} else {
-			p.colsPerLine[zl]++
+			p.runesPerLine[zl]++
+			p.bytesPerLine[zl] += size
 		}
-		p.offset++
+		p.offset += size
+		in = in[size:]
 	}
 }
 
@@ -97,7 +104,8 @@ func (p *Position) Reset() {
 }
 
 func (p *Position) reset() {
-	p.colsPerLine = p.colsPerLine[:0]
+	p.runesPerLine = p.runesPerLine[:0]
+	p.bytesPerLine = p.bytesPerLine[:0]
 	p.offset = 0
 }
 
@@ -106,59 +114,71 @@ func (p *Position) Copy() Position {
 	defer p.mu.Unlock()
 
 	newPos := Position{
-		colsPerLine: make([]int, len(p.colsPerLine)),
-		offset:      p.offset,
+		runesPerLine: make([]int, len(p.runesPerLine)),
+		bytesPerLine: make([]int, len(p.bytesPerLine)),
+		offset:       p.offset,
 	}
 
-	copy(newPos.colsPerLine, p.colsPerLine)
+	copy(newPos.runesPerLine, p.runesPerLine)
+	copy(newPos.bytesPerLine, p.bytesPerLine)
 
 	return newPos
 }
 
-func (p *Position) Rewind(positions int) error {
+func (p *Position) Rewind(bytes, runes int) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	switch {
-	case positions == 0:
+	case bytes == 0 && runes == 0:
 		return nil // no-op
-	case positions < 0:
-		return fmt.Errorf("cannot rewind by a negative number: %d", positions)
-	case positions > p.offset:
-		return fmt.Errorf("cannot rewind by %d, only %d available", positions, p.offset)
-	case positions == p.offset:
+	case bytes < 0 || runes < 0:
+		return fmt.Errorf("cannot rewind by negative amounts: bytes=%d, runes=%d", bytes, runes)
+	case bytes > p.offset:
+		return fmt.Errorf("cannot rewind by %d bytes, only %d available", bytes, p.offset)
+	case bytes == p.offset:
 		p.reset()
 		return nil
 	}
 
-	rewind := 0
-	lastLine := len(p.colsPerLine) - 1
+	bytesRewound := 0
+	runesRewound := 0
+	lastLine := len(p.bytesPerLine) - 1
 
-	for rewind < positions {
-		columns := p.colsPerLine[lastLine]
-		remaining := positions - rewind
+	for bytesRewound < bytes && lastLine >= 0 {
+		lineBytes := p.bytesPerLine[lastLine]
+		lineRunes := p.runesPerLine[lastLine]
+		remainingBytes := bytes - bytesRewound
 
-		if remaining <= columns {
+		if remainingBytes <= lineBytes {
+			// Partial rewind within this line
 			break
 		}
 
-		rewind += columns
+		// Consume entire line
+		bytesRewound += lineBytes
+		runesRewound += lineRunes
 		lastLine--
 
 		if lastLine >= 0 {
-			rewind += 1 // for the newline
+			bytesRewound++ // for the newline
+			runesRewound++ // newline is 1 rune
 		}
 	}
 
 	if lastLine >= 0 {
-		remaining := positions - rewind
-		if p.colsPerLine[lastLine] >= remaining {
-			p.colsPerLine[lastLine] -= remaining
-			p.colsPerLine = p.colsPerLine[:lastLine+1]
-			p.offset -= positions
+		remainingBytes := bytes - bytesRewound
+		remainingRunes := runes - runesRewound
+
+		if p.bytesPerLine[lastLine] >= remainingBytes {
+			p.bytesPerLine[lastLine] -= remainingBytes
+			p.runesPerLine[lastLine] -= remainingRunes
+			p.bytesPerLine = p.bytesPerLine[:lastLine+1]
+			p.runesPerLine = p.runesPerLine[:lastLine+1]
+			p.offset -= bytes
 			return nil
 		}
 	}
 
-	return fmt.Errorf("rewind failed, wanted %d, had %d", positions, rewind)
+	return fmt.Errorf("rewind failed: wanted %d bytes, rewound %d", bytes, bytesRewound)
 }
