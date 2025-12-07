@@ -255,8 +255,10 @@ func (t *TextReader) ReadByte() (byte, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	ok, err := t.fillAtLeast(1)
-	if !ok || err != nil {
+	// Try to fill the buffer with at least 1 byte.
+	// We tolerate io.EOF here, as we might have buffered data to read.
+	_, err := t.fillAtLeast(1)
+	if err != nil && !errors.Is(err, io.EOF) {
 		return 0, err
 	}
 
@@ -309,30 +311,29 @@ func (t *TextReader) Seek(offset int64, whence int) (int64, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	var newR int // new read pointer relative to start of t.buf
+	var newR int64 // new read pointer relative to start of t.buf
 
 	switch whence {
 	case io.SeekStart:
-		targetOffset := int(offset)
-		if targetOffset < 0 {
+		if offset < 0 {
 			return 0, errors.New("textreader: negative position")
 		}
 
 		// Calculate the absolute stream offset that corresponds to the start of our buffer.
-		bufferStartOffset := t.pos.Offset() - t.r
+		bufferStartOffset := int64(t.pos.Offset() - t.r)
 
 		// If the target absolute offset is before the start of our buffered data, we cannot seek there.
-		if targetOffset < bufferStartOffset {
+		if offset < bufferStartOffset {
 			return 0, ErrSeekOutOfBuffer
 		}
 
 		// Calculate new read pointer relative to the buffer.
-		newR = targetOffset - bufferStartOffset
+		newR = offset - bufferStartOffset
 
 	case io.SeekCurrent:
-		newR = t.r + int(offset)
+		newR = int64(t.r) + offset
 	case io.SeekEnd:
-		newR = t.w + int(offset)
+		newR = int64(t.w) + offset
 	default:
 		return 0, errors.New("textreader: invalid whence")
 	}
@@ -341,40 +342,47 @@ func (t *TextReader) Seek(offset int64, whence int) (int64, error) {
 		return 0, errors.New("textreader: negative position")
 	}
 
-	rel := newR - t.r
+	rel := newR - int64(t.r)
 	if rel == 0 {
 		return int64(t.pos.Offset()), nil
 	}
 
+	// Check bounds before converting to int for buffer operations
+	if newR > int64(t.capacity) {
+		return 0, ErrSeekOutOfBuffer
+	}
+	newRInt := int(newR)
+	relInt := int(rel)
+
 	if rel > 0 { // Seeking Forward
-		if rel > t.capacity {
+		if relInt > t.capacity {
 			return 0, ErrSeekOutOfBuffer
 		}
 
 		bytesAvailable := t.w - t.r
-		if rel > bytesAvailable {
-			if _, err := t.fillAtLeast(rel); err != nil && !errors.Is(err, io.EOF) {
+		if relInt > bytesAvailable {
+			if _, err := t.fillAtLeast(relInt); err != nil && !errors.Is(err, io.EOF) {
 				return 0, fmt.Errorf("fillAtLeast: %w", err)
 			}
 		}
 
-		if t.r+rel > t.w {
+		if t.r+relInt > t.w {
 			return 0, ErrSeekOutOfBuffer
 		}
 
-		t.pos.Scan(t.buf[t.r : t.r+rel])
-		t.r += rel
+		t.pos.Scan(t.buf[t.r : t.r+relInt])
+		t.r += relInt
 
 	} else { // Seeking Backward
-		if newR < 0 {
+		if newRInt < 0 {
 			return 0, ErrSeekOutOfBuffer
 		}
 		// Count runes in the slice we're rewinding over
-		runeCount := utf8.RuneCount(t.buf[newR:t.r])
-		if err := t.pos.Rewind(-rel, runeCount); err != nil {
+		runeCount := utf8.RuneCount(t.buf[newRInt:t.r])
+		if err := t.pos.Rewind(-relInt, runeCount); err != nil {
 			return 0, fmt.Errorf("pos.Rewind: %w", err)
 		}
-		t.r += rel
+		t.r += relInt
 	}
 
 	t.lastRuneSize = -1
