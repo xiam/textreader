@@ -1,6 +1,7 @@
 package position_test
 
 import (
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -235,4 +236,52 @@ func TestPosition(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, 12, pos.Column()) // 12 runes, not 14 bytes
 	}
+}
+
+// TestCopySafety verifies that Copy() returns a *Position with a fresh mutex,
+// which is safe for concurrent use.
+func TestCopySafety(t *testing.T) {
+	t.Run("copy returns independent position", func(t *testing.T) {
+		pos := position.New()
+		pos.Scan([]byte("hello\nworld"))
+
+		// Copy returns *Position with fresh mutex
+		copied := pos.Copy()
+
+		// Both should have same state
+		assert.Equal(t, pos.Line(), copied.Line())
+		assert.Equal(t, pos.Column(), copied.Column())
+		assert.Equal(t, pos.Offset(), copied.Offset())
+
+		// Modify original - copy should be unaffected
+		pos.Scan([]byte("more"))
+		assert.Equal(t, 11, copied.Offset(), "copy should be unaffected by original modification")
+	})
+
+	t.Run("concurrent use of original and copy is safe", func(t *testing.T) {
+		pos := position.New()
+		pos.Scan([]byte("test data"))
+
+		// Copy has its own fresh mutex - safe for concurrent use
+		copied := pos.Copy()
+
+		var wg sync.WaitGroup
+
+		// Use both original and copy concurrently
+		for i := 0; i < 100; i++ {
+			wg.Add(2)
+			go func() {
+				defer wg.Done()
+				pos.Scan([]byte("x"))
+				_ = pos.Line()
+			}()
+			go func() {
+				defer wg.Done()
+				_ = copied.Line()
+				_ = copied.Column()
+			}()
+		}
+
+		wg.Wait()
+	})
 }

@@ -398,7 +398,5 @@ func (t *TextReader) Pos() *position.Position {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	p := t.pos.Copy()
-
-	return &p
+	return t.pos.Copy()
 }

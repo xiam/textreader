@@ -88,27 +88,21 @@ func TestCopy(t *testing.T) {
 	p1.Scan([]byte("copy\nthis\ndata"))
 	assertPositionState(t, p1, 3, 4, 14, "Original before copy")
 
-	p2 := p1.Copy() // Note: Copy returns a value, not a pointer
+	p2 := p1.Copy() // Copy returns *Position with fresh mutex
 
 	// Verify p2 is a copy of p1's state *at the time of copy*
-	// We need to access p2's state. Since it's not a pointer, we can't call methods directly
-	// on 'p2' if they have pointer receivers. Let's test the state by scanning more on p1.
-	// Or, more directly, let's make the getters work on values too (or test fields if exported, but they aren't).
-	// Let's assume we want to compare the state via getters. We need a pointer to p2.
-	p2Ptr := &p2
-	assertPositionState(t, p2Ptr, 3, 4, 14, "Copy initial state")
+	assertPositionState(t, p2, 3, 4, 14, "Copy initial state")
 
 	// Modify original (p1)
 	p1.Scan([]byte("more"))
 	assertPositionState(t, p1, 3, 8, 18, "Original after modification")
 
 	// Verify copy (p2) remains unchanged
-	assertPositionState(t, p2Ptr, 3, 4, 14, "Copy after original modified")
+	assertPositionState(t, p2, 3, 4, 14, "Copy after original modified")
 
-	// Modify copy (p2) - need Scan to work on value receiver or use pointer
-	// Let's assume Scan works on pointer receiver (as it modifies state)
-	p2Ptr.Scan([]byte(" appended"))                                     // Need to use the pointer to modify
-	assertPositionState(t, p2Ptr, 3, 13, 23, "Copy after modification") // 14 + 9 = 23
+	// Modify copy (p2)
+	p2.Scan([]byte(" appended"))
+	assertPositionState(t, p2, 3, 13, 23, "Copy after modification") // 14 + 9 = 23
 
 	// Verify original (p1) remains unchanged by copy modification
 	assertPositionState(t, p1, 3, 8, 18, "Original after copy modified")
@@ -316,11 +310,10 @@ func TestCopyIndependence(t *testing.T) {
 	p1 := position.New()
 	p1.Scan([]byte("abc\n"))
 
-	p2 := p1.Copy() // p2 is a value
-	p2Ptr := &p2    // Get a pointer to call modifying methods like Scan
+	p2 := p1.Copy() // p2 is *Position with fresh mutex
 
 	p1.Scan([]byte("def"))
-	p2Ptr.Scan([]byte("xyz\n123"))
+	p2.Scan([]byte("xyz\n123"))
 
 	// Check p1 state
 	assertPositionState(t, p1, 2, 3, 7, "p1 state after its own scan") // abc\ndef -> L2, C3, O7
@@ -330,7 +323,7 @@ func TestCopyIndependence(t *testing.T) {
 	// xyz -> L2, C3, O7
 	// \n  -> L3, C0, O8
 	// 123 -> L3, C3, O11
-	assertPositionState(t, p2Ptr, 3, 3, 11, "p2 state after its own scan")
+	assertPositionState(t, p2, 3, 3, 11, "p2 state after its own scan")
 }
 
 // Helper function to simulate reading a buffer and tracking position

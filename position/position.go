@@ -109,20 +109,17 @@ func (p *Position) reset() {
 	p.offset = 0
 }
 
-func (p *Position) Copy() Position {
+func (p *Position) Copy() *Position {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	newPos := Position{
-		runesPerLine: make([]int, len(p.runesPerLine)),
-		bytesPerLine: make([]int, len(p.bytesPerLine)),
+	return &Position{
+		// Note: mu is intentionally not copied - a fresh zero-value mutex is correct.
+		// Per Go docs: "A Mutex must not be copied after first use."
+		runesPerLine: append([]int(nil), p.runesPerLine...),
+		bytesPerLine: append([]int(nil), p.bytesPerLine...),
 		offset:       p.offset,
 	}
-
-	copy(newPos.runesPerLine, p.runesPerLine)
-	copy(newPos.bytesPerLine, p.bytesPerLine)
-
-	return newPos
 }
 
 func (p *Position) Rewind(bytes, runes int) error {
