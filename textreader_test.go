@@ -16,8 +16,8 @@ import (
 // Compile-time checks to ensure TextReader implements expected interfaces.
 var (
 	_ io.Reader     = (*TextReader)(nil)
-	_ io.ByteReader = (*TextReader)(nil)
 	_ io.RuneReader = (*TextReader)(nil)
+	_ io.RuneScanner = (*TextReader)(nil)
 	_ io.Seeker     = (*TextReader)(nil)
 )
 
@@ -169,13 +169,13 @@ func TestTextReader(t *testing.T) {
 		}
 	})
 
-	t.Run("read and unread bytes", func(t *testing.T) {
+	t.Run("read runes and seek back", func(t *testing.T) {
 		tr := New(strings.NewReader(data))
 
-		b, err := tr.ReadByte()
+		r, _, err := tr.ReadRune()
 		require.NoError(t, err)
 
-		assert.Equal(t, byte('f'), b)
+		assert.Equal(t, 'f', r)
 
 		{
 			pos := tr.Pos()
@@ -184,7 +184,8 @@ func TestTextReader(t *testing.T) {
 			assert.Equal(t, 1, pos.Offset())
 		}
 
-		err = tr.UnreadByte()
+		// Use Seek to go back one rune
+		_, err = tr.Seek(-1, io.SeekCurrent)
 		require.NoError(t, err)
 
 		{
@@ -194,7 +195,8 @@ func TestTextReader(t *testing.T) {
 			assert.Equal(t, 0, pos.Offset())
 		}
 
-		err = tr.UnreadByte()
+		// Seeking before start should fail
+		_, err = tr.Seek(-1, io.SeekCurrent)
 		require.Error(t, err)
 
 		{
@@ -204,9 +206,9 @@ func TestTextReader(t *testing.T) {
 			assert.Equal(t, 0, pos.Offset())
 		}
 
-		b, err = tr.ReadByte()
+		r, _, err = tr.ReadRune()
 		require.NoError(t, err)
-		assert.Equal(t, byte('f'), b)
+		assert.Equal(t, 'f', r)
 
 		{
 			pos := tr.Pos()
@@ -229,9 +231,9 @@ func TestTextReader(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, int64(17), offset)
 
-			b, err := tr.ReadByte()
+			r, _, err := tr.ReadRune()
 			require.NoError(t, err)
-			assert.Equal(t, byte(' '), b)
+			assert.Equal(t, ' ', r)
 
 			{
 				pos := tr.Pos()
@@ -240,7 +242,8 @@ func TestTextReader(t *testing.T) {
 				assert.Equal(t, 18, pos.Offset())
 			}
 
-			err = tr.UnreadByte()
+			// Use Seek to go back one rune
+			_, err = tr.Seek(-1, io.SeekCurrent)
 			require.NoError(t, err)
 
 			{
@@ -262,7 +265,7 @@ func TestTextReader(t *testing.T) {
 			}
 
 			{
-				_, err := tr.ReadByte()
+				_, _, err := tr.ReadRune()
 				require.Error(t, err)
 			}
 		})
@@ -273,7 +276,7 @@ func TestTextReader(t *testing.T) {
 			assert.Equal(t, int64(0), offset)
 
 			{
-				_, err := tr.ReadByte()
+				_, _, err := tr.ReadRune()
 				require.Error(t, err)
 			}
 		})
@@ -291,9 +294,9 @@ func TestTextReader(t *testing.T) {
 				assert.Equal(t, len(data)-1, pos.Offset())
 			}
 
-			b, err := tr.ReadByte()
+			r, _, err := tr.ReadRune()
 			require.NoError(t, err)
-			assert.Equal(t, byte('\n'), b)
+			assert.Equal(t, '\n', r)
 
 			{
 				pos := tr.Pos()
@@ -315,9 +318,9 @@ func TestTextReader(t *testing.T) {
 				assert.Equal(t, 0, pos.Offset())
 			}
 
-			b, err := tr.ReadByte()
+			r, _, err := tr.ReadRune()
 			require.NoError(t, err)
-			assert.Equal(t, byte('f'), b)
+			assert.Equal(t, 'f', r)
 
 			{
 				pos := tr.Pos()
@@ -352,9 +355,9 @@ func TestTextReader(t *testing.T) {
 				assert.Equal(t, 1, pos.Offset())
 			}
 
-			b, err := tr.ReadByte()
+			r, _, err := tr.ReadRune()
 			require.NoError(t, err)
-			assert.Equal(t, byte('i'), b)
+			assert.Equal(t, 'i', r)
 
 			{
 				pos := tr.Pos()
@@ -382,10 +385,13 @@ func TestTextReader(t *testing.T) {
 		_, err = io.ReadFull(r, readBytes)
 		require.NoError(t, err, "Second read failed")
 
-		nextByte, err := r.ReadByte()
-		require.NoError(t, err, "ReadByte after setup failed")
-		require.Equal(t, byte('w'), nextByte, "Expected to be at 'w' after setup")
-		require.NoError(t, r.UnreadByte(), "UnreadByte failed")
+		nextRune, _, err := r.ReadRune()
+		require.NoError(t, err, "ReadRune after setup failed")
+		require.Equal(t, 'w', nextRune, "Expected to be at 'w' after setup")
+
+		// Use Seek to go back
+		_, err = r.Seek(-1, io.SeekCurrent)
+		require.NoError(t, err, "Seek back 1 rune failed")
 
 		// Seeking backwards to 'r' which should still be in the shifted buffer
 		newPos, err := r.Seek(-5, io.SeekCurrent)
@@ -394,9 +400,9 @@ func TestTextReader(t *testing.T) {
 		expectedPos := int64(17)
 		require.Equal(t, expectedPos, newPos, "Seek returned incorrect new position")
 
-		b, err := r.ReadByte()
-		require.NoError(t, err, "ReadByte after seek failed")
-		assert.Equal(t, byte('r'), b, "Read wrong byte after seek")
+		ru, _, err := r.ReadRune()
+		require.NoError(t, err, "ReadRune after seek failed")
+		assert.Equal(t, 'r', ru, "Read wrong rune after seek")
 	})
 }
 
@@ -410,10 +416,6 @@ func TestTextReaderEdgeCases(t *testing.T) {
 		assert.Equal(t, rune(0), r)
 		assert.Equal(t, 0, size)
 
-		b, err := tr.ReadByte()
-		assert.ErrorIs(t, err, io.EOF)
-		assert.Equal(t, byte(0), b)
-
 		buf := make([]byte, 10)
 		n, err := tr.Read(buf)
 		assert.ErrorIs(t, err, io.EOF)
@@ -425,7 +427,6 @@ func TestTextReaderEdgeCases(t *testing.T) {
 		_, err = tr.Seek(1, io.SeekStart)
 		assert.ErrorIs(t, err, ErrSeekOutOfBuffer)
 
-		assert.ErrorIs(t, tr.UnreadByte(), bufio.ErrInvalidUnreadByte)
 		assert.ErrorIs(t, tr.UnreadRune(), bufio.ErrInvalidUnreadRune)
 	})
 
@@ -445,24 +446,6 @@ func TestTextReaderEdgeCases(t *testing.T) {
 		assert.Equal(t, input, result.String())
 
 		_, _, err := tr.ReadRune()
-		assert.ErrorIs(t, err, io.EOF)
-	})
-
-	t.Run("SmallCapacity_ReadByte", func(t *testing.T) {
-		text := "Hello, 世界"
-		tr := newReader(text, 5)
-		var result []byte
-
-		for i := 0; i < len(text); i++ {
-			b, err := tr.ReadByte()
-			require.NoError(t, err, "Failed at byte index %d", i)
-			assert.Equal(t, text[i], b)
-			result = append(result, b)
-		}
-
-		assert.Equal(t, text, string(result))
-
-		_, err := tr.ReadByte()
 		assert.ErrorIs(t, err, io.EOF)
 	})
 
@@ -576,92 +559,91 @@ func TestTextReaderEdgeCases(t *testing.T) {
 		assert.Equal(t, 1+3+1, tr.Pos().Offset())
 	})
 
-	t.Run("UnreadByte", func(t *testing.T) {
+	t.Run("SeekBackAfterReadRune", func(t *testing.T) {
 		text := "abc"
 		tr := newReader(text, 10)
 
-		b, err := tr.ReadByte()
+		r, _, err := tr.ReadRune()
 		require.NoError(t, err)
-		assert.Equal(t, byte('a'), b)
+		assert.Equal(t, 'a', r)
 		assert.Equal(t, 1, tr.Pos().Offset())
 
-		b, err = tr.ReadByte()
+		r, _, err = tr.ReadRune()
 		require.NoError(t, err)
-		assert.Equal(t, byte('b'), b)
+		assert.Equal(t, 'b', r)
 		assert.Equal(t, 2, tr.Pos().Offset())
 
-		err = tr.UnreadByte()
+		// Use Seek to go back one rune
+		_, err = tr.Seek(-1, io.SeekCurrent)
 		require.NoError(t, err)
 		assert.Equal(t, 1, tr.Pos().Offset())
 
-		b, err = tr.ReadByte()
+		r, _, err = tr.ReadRune()
 		require.NoError(t, err)
-		assert.Equal(t, byte('b'), b)
+		assert.Equal(t, 'b', r)
 		assert.Equal(t, 2, tr.Pos().Offset())
 
-		err = tr.UnreadByte()
-		require.NoError(t, err)
-		err = tr.UnreadByte()
-		assert.ErrorIs(t, err, bufio.ErrInvalidUnreadByte)
-		assert.Equal(t, 1, tr.Pos().Offset())
+		r, _, _ = tr.ReadRune()
+		assert.Equal(t, 'c', r)
 
-		b, _ = tr.ReadByte()
-		assert.Equal(t, byte('b'), b)
-		b, _ = tr.ReadByte()
-		assert.Equal(t, byte('c'), b)
-
-		_, err = tr.ReadByte()
+		_, _, err = tr.ReadRune()
 		assert.ErrorIs(t, err, io.EOF)
 
-		err = tr.UnreadByte()
+		// Seek back from end
+		_, err = tr.Seek(-1, io.SeekCurrent)
 		require.NoError(t, err)
 		assert.Equal(t, 2, tr.Pos().Offset())
 
-		b, err = tr.ReadByte()
+		r, _, err = tr.ReadRune()
 		require.NoError(t, err)
-		assert.Equal(t, byte('c'), b)
+		assert.Equal(t, 'c', r)
 		assert.Equal(t, 3, tr.Pos().Offset())
 	})
 
-	t.Run("MixedReadUnread", func(t *testing.T) {
+	t.Run("MixedReadAndSeek", func(t *testing.T) {
 		text := "a你好b"
 		tr := newReader(text, 10)
 
-		_, err := tr.ReadByte()
+		// Read 'a'
+		r, _, err := tr.ReadRune()
 		require.NoError(t, err)
+		assert.Equal(t, 'a', r)
+		assert.Equal(t, 1, tr.Pos().Offset())
 
-		_, _, err = tr.ReadRune()
+		// Read '你'
+		r, _, err = tr.ReadRune()
 		require.NoError(t, err)
+		assert.Equal(t, '你', r)
 		assert.Equal(t, 1+3, tr.Pos().Offset())
 
 		err = tr.UnreadRune()
 		require.NoError(t, err)
 		assert.Equal(t, 1, tr.Pos().Offset())
 
-		// UnreadByte after UnreadRune should fail
-		err = tr.UnreadByte()
-		assert.ErrorIs(t, err, bufio.ErrInvalidUnreadByte)
-
-		// Read '你' byte-by-byte
-		b1, _ := tr.ReadByte()
-		b2, _ := tr.ReadByte()
-		b3, _ := tr.ReadByte()
-		assert.Equal(t, "你", string([]byte{b1, b2, b3}))
+		// Read '你' again
+		r, _, err = tr.ReadRune()
+		require.NoError(t, err)
+		assert.Equal(t, '你', r)
 		assert.Equal(t, 4, tr.Pos().Offset())
 
-		_, _, err = tr.ReadRune()
+		// Read '好'
+		r, _, err = tr.ReadRune()
 		require.NoError(t, err)
+		assert.Equal(t, '好', r)
 		assert.Equal(t, 4+3, tr.Pos().Offset())
 
-		_, err = tr.ReadByte()
+		// Read 'b'
+		r, _, err = tr.ReadRune()
 		require.NoError(t, err)
+		assert.Equal(t, 'b', r)
 		assert.Equal(t, 4+3+1, tr.Pos().Offset())
 
-		err = tr.UnreadByte()
+		// Use Seek to go back one rune
+		_, err = tr.Seek(-1, io.SeekCurrent)
 		require.NoError(t, err)
 		assert.Equal(t, 4+3, tr.Pos().Offset())
 
-		// UnreadRune after UnreadByte should fail
+		// UnreadRune after Seek should fail
 		err = tr.UnreadRune()
 		assert.ErrorIs(t, err, bufio.ErrInvalidUnreadRune)
 	})
@@ -682,7 +664,6 @@ func TestTextReaderEdgeCases(t *testing.T) {
 		assert.Equal(t, 0, tr.w)
 		assert.Equal(t, 0, tr.r)
 		assert.Equal(t, -1, tr.lastRuneSize)
-		assert.Equal(t, -1, tr.lastByte)
 
 		n, err = tr.Read(buf[:5])
 		require.NoError(t, err)
@@ -796,7 +777,7 @@ func TestTextReaderEdgeCases(t *testing.T) {
 		_, err = tr.Seek(-1, io.SeekStart)
 		assert.ErrorContains(t, err, "negative position")
 
-		_, err = tr.ReadByte()
+		_, _, err = tr.ReadRune()
 		require.NoError(t, err)
 
 		_, err = tr.Seek(-2, io.SeekCurrent)
@@ -815,6 +796,44 @@ func TestTextReaderEdgeCases(t *testing.T) {
 		assert.Error(t, err)
 		assert.False(t, ok)
 	})
+}
+
+// TestSeekBackMultibyteUTF8 demonstrates that Seek correctly handles
+// multi-byte UTF-8 characters by counting runes properly during rewind.
+func TestSeekBackMultibyteUTF8(t *testing.T) {
+	// "café" = 4 runes, 5 bytes (the 'é' is 2 bytes: 0xC3 0xA9)
+	text := "café"
+	tr := newReader(text, 64)
+
+	// Read all bytes
+	buf := make([]byte, 5)
+	n, err := tr.Read(buf)
+	require.NoError(t, err)
+	assert.Equal(t, 5, n)
+	assert.Equal(t, text, string(buf))
+
+	// Verify position after reading
+	pos := tr.Pos()
+	assert.Equal(t, 5, pos.Offset(), "Offset should be 5 bytes")
+	assert.Equal(t, 4, pos.Column(), "Column should be 4 runes (c-a-f-é)")
+
+	// Seek back 2 bytes (the full 'é' character)
+	_, err = tr.Seek(-2, io.SeekCurrent)
+	require.NoError(t, err)
+
+	pos = tr.Pos()
+	assert.Equal(t, 3, pos.Offset(), "Offset should be 3 bytes")
+	assert.Equal(t, 3, pos.Column(), "Column should be 3 runes (c-a-f)")
+
+	// Read the 'é' character back
+	r, size, err := tr.ReadRune()
+	require.NoError(t, err)
+	assert.Equal(t, 'é', r, "Should read 'é'")
+	assert.Equal(t, 2, size, "é is 2 bytes")
+
+	pos = tr.Pos()
+	assert.Equal(t, 5, pos.Offset())
+	assert.Equal(t, 4, pos.Column(), "Column should be 4 runes")
 }
 
 func TestPositionScanRewind(t *testing.T) {

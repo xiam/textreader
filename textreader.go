@@ -34,7 +34,6 @@ type TextReader struct {
 	pos *position.Position
 
 	lastRuneSize int
-	lastByte     int
 
 	capacity int
 	buf      []byte
@@ -62,7 +61,6 @@ func NewWithCapacity(r io.Reader, capacity int) *TextReader {
 		pos:          position.New(),
 		capacity:     capacity,
 		lastRuneSize: -1,
-		lastByte:     -1,
 	}
 }
 
@@ -146,7 +144,6 @@ func (t *TextReader) ReadRune() (r rune, size int, err error) {
 
 	// Update state to allow for UnreadRune.
 	t.lastRuneSize = size
-	t.lastByte = -1 // Invalidate byte-level unread
 
 	// The error is nil because we successfully "read" a rune from the stream,
 	// even if that rune is the replacement/error character. The caller is
@@ -170,9 +167,7 @@ func (t *TextReader) UnreadRune() error {
 	}
 
 	t.r -= t.lastRuneSize
-
 	t.lastRuneSize = -1
-	t.lastByte = -1
 
 	return nil
 }
@@ -223,9 +218,7 @@ func (t *TextReader) Read(p []byte) (n int, err error) {
 			// Reset the buffer since we dumped it all into
 			t.r = 0
 			t.w = 0
-
 			t.lastRuneSize = -1
-			t.lastByte = -1
 
 			filled += n
 
@@ -237,67 +230,12 @@ func (t *TextReader) Read(p []byte) (n int, err error) {
 	}
 
 	t.lastRuneSize = -1
-	t.lastByte = -1
-
-	if t.r > 0 {
-		t.lastByte = int(t.buf[t.r-1])
-	}
 
 	if filled == 0 && readErr != nil {
 		return 0, readErr
 	}
 
 	return filled, nil
-}
-
-// ReadByte reads and returns a single byte.
-func (t *TextReader) ReadByte() (byte, error) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	// Try to fill the buffer with at least 1 byte.
-	// We tolerate io.EOF here, as we might have buffered data to read.
-	_, err := t.fillAtLeast(1)
-	if err != nil && !errors.Is(err, io.EOF) {
-		return 0, err
-	}
-
-	if t.r >= t.w {
-		return 0, io.EOF
-	}
-
-	// Read byte from buffer
-	b := t.buf[t.r]
-	t.pos.Scan(t.buf[t.r : t.r+1])
-	t.r++
-
-	t.lastRuneSize = -1
-	t.lastByte = int(b)
-
-	return b, nil
-}
-
-// UnreadByte unreads the last byte read by ReadByte. It is an error to call
-// UnreadByte if the most recent method called on the TextReader was not
-// ReadByte.  Only one level of unread is supported.
-func (t *TextReader) UnreadByte() error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	if t.lastByte < 0 || t.r == 0 {
-		return bufio.ErrInvalidUnreadByte
-	}
-
-	if err := t.pos.Rewind(1, 1); err != nil {
-		return fmt.Errorf("rewind: %w", err)
-	}
-
-	t.r--
-
-	t.lastByte = -1
-	t.lastRuneSize = -1
-
-	return nil
 }
 
 // Seek sets the offset for the next Read or ReadRune, interpreting offset and
@@ -386,7 +324,6 @@ func (t *TextReader) Seek(offset int64, whence int) (int64, error) {
 	}
 
 	t.lastRuneSize = -1
-	t.lastByte = -1
 
 	return int64(t.pos.Offset()), nil
 }

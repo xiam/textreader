@@ -12,9 +12,9 @@ around the current read position.
 - **Unicode Support**: Properly handles UTF-8 encoded text including multi-byte
   characters. Column counts characters (runes), not bytes, so a line with
   `"hello 🌍"` reports column 7 after reading the emoji, not column 10.
-- **Multiple Read Methods**: Read by rune, byte, or arbitrary chunks
-- **Unread Support**: Single-level unread operations for both runes and bytes
-- **Seeking**: Navigate to specific positions within the buffered data
+- **Multiple Read Methods**: Read by rune or arbitrary byte chunks
+- **Unread Support**: Single-level unread for runes via `UnreadRune()`
+- **Seeking**: Navigate to specific positions within the buffered data using `Seek()`
 
 ## Use Cases
 
@@ -71,8 +71,9 @@ func main() {
   already been read and discarded from the buffer.
 - Seeking **does not affect the underlying `io.Reader`**.
 - **Only single-level unread operations are supported.** You can only unread
-  the most recently read rune or byte. Calling `UnreadRune` or `UnreadByte`
-  twice in a row without an intermediate read will result in an error.
+  the most recently read rune via `UnreadRune()`. Calling it twice in a row
+  without an intermediate read will result in an error. Use `Seek()` for more
+  flexible backward navigation.
 - **Position tracking assumes UTF-8 encoded text.** While the reader can
   process any byte stream, the line and column counts will only be accurate for
   valid UTF-8 text.
