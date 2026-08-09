@@ -211,8 +211,8 @@ func TestPosition(t *testing.T) {
 		// Test that Column counts runes, not bytes
 		// 🦄 is 4 bytes but 1 rune
 		pos.Scan([]byte("🦄"))
-		assert.Equal(t, 4, pos.Offset())  // 4 bytes
-		assert.Equal(t, 1, pos.Column())  // 1 rune (not 4!)
+		assert.Equal(t, 4, pos.Offset()) // 4 bytes
+		assert.Equal(t, 1, pos.Column()) // 1 rune (not 4!)
 		assert.Equal(t, 1, pos.Line())
 
 		pos.Scan([]byte("\n"))
