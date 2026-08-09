@@ -1,7 +1,9 @@
 {
   "blocked_paths": [
-    ".gitattributes"
+    ".gitattributes",
+    "docs",
+    "docs/**"
   ],
   "schema_version": 1,
-  "source_hash": "sha256:16da819b4b39ec5e3c37f3077e1fe3c2c580a06e978361f11ebd0a49419f0047"
+  "source_hash": "sha256:3b3b5e2db7cece0b49c6f417c668f452796fafa979c6b1bdbab8de728ce281e7"
 }

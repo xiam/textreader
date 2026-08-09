@@ -1,0 +1,13 @@
+# Test and coverage output
+coverage.out
+*.out
+*.test
+
+# Build output
+*.exe
+/textreader
+/textreader.test
+
+# Editor / OS cruft
+*.swp
+.DS_Store
