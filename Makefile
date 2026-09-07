@@ -1,2 +1,2 @@
 test:
-	go test -failfast -race -v .
+	go test -failfast -race -v ./...
