@@ -15,10 +15,10 @@ import (
 
 // Compile-time checks to ensure TextReader implements expected interfaces.
 var (
-	_ io.Reader     = (*TextReader)(nil)
-	_ io.RuneReader = (*TextReader)(nil)
+	_ io.Reader      = (*TextReader)(nil)
+	_ io.RuneReader  = (*TextReader)(nil)
 	_ io.RuneScanner = (*TextReader)(nil)
-	_ io.Seeker     = (*TextReader)(nil)
+	_ io.Seeker      = (*TextReader)(nil)
 )
 
 func newReader(text string, capacity int) *TextReader {

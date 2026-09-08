@@ -1,3 +1,6 @@
+// Package position tracks a location in a stream of UTF-8 text as line, column,
+// and byte offset. Column counts runes since the last newline, while offset
+// counts bytes from the start of the stream.
 package position
 
 import (
@@ -17,6 +20,8 @@ type Position struct {
 	offset       int   // total byte offset
 }
 
+// New returns a new Position at the start of the stream: line 1, column 0, and
+// offset 0.
 func New() *Position {
 	return &Position{
 		mu: sync.Mutex{},
@@ -42,6 +47,7 @@ func (p *Position) column() int {
 	return p.runesPerLine[zl-1]
 }
 
+// String returns the position formatted as "line:column".
 func (p *Position) String() string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -49,6 +55,7 @@ func (p *Position) String() string {
 	return fmt.Sprintf("%d:%d", p.line(), p.column())
 }
 
+// Line returns the current 1-based line number.
 func (p *Position) Line() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -56,6 +63,8 @@ func (p *Position) Line() int {
 	return p.line()
 }
 
+// Column returns the current column as the number of runes read since the last
+// newline. It is 0 at the start of a line and before any input is scanned.
 func (p *Position) Column() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -63,6 +72,7 @@ func (p *Position) Column() int {
 	return p.column()
 }
 
+// Offset returns the total number of bytes scanned from the start of the stream.
 func (p *Position) Offset() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -70,6 +80,8 @@ func (p *Position) Offset() int {
 	return p.offset
 }
 
+// Scan advances the position over in, updating the line, column, and offset. It
+// assumes in holds valid UTF-8; each '\n' starts a new line.
 func (p *Position) Scan(in []byte) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -96,6 +108,8 @@ func (p *Position) Scan(in []byte) {
 	}
 }
 
+// Reset returns the position to the start of the stream (line 1, column 0,
+// offset 0).
 func (p *Position) Reset() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -109,6 +123,8 @@ func (p *Position) reset() {
 	p.offset = 0
 }
 
+// Copy returns a deep copy of the position. The returned Position is
+// independent of the receiver and carries its own zero-value mutex.
 func (p *Position) Copy() *Position {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -122,6 +138,10 @@ func (p *Position) Copy() *Position {
 	}
 }
 
+// Rewind moves the position backward by the given number of bytes and runes,
+// for example to undo a preceding Scan. Passing 0 for both is a no-op. It
+// returns an error if either amount is negative or if bytes exceeds the number
+// of bytes scanned so far.
 func (p *Position) Rewind(bytes, runes int) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
