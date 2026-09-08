@@ -11,6 +11,10 @@ jobs:
   test:
 
     strategy:
+      # Report every cell. With the default (fail-fast: true) the first failing
+      # cell cancels its siblings, so a single broken combination hides the
+      # true state of the rest of the matrix.
+      fail-fast: false
       matrix:
         os:
           - "ubuntu-latest"
@@ -19,6 +23,16 @@ jobs:
           - "1.21.x"
           - "1.25.x"
           - "1.26.x"
+        exclude:
+          # `make test` runs with -race, which requires cgo and therefore links
+          # through the system linker rather than Go's internal one. Go 1.21 on
+          # a current macOS toolchain emits a Mach-O without an LC_UUID load
+          # command, which dyld refuses to load ("missing LC_UUID load
+          # command"), so the test binary aborts before any test runs. Later Go
+          # releases link correctly, and Linux is unaffected. go.mod declares
+          # go 1.21.1, so 1.21 coverage is kept on ubuntu-latest.
+          - os: "macos-latest"
+            go-version: "1.21.x"
 
     runs-on: ${{ matrix.os }}
 
