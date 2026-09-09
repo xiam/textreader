@@ -21,10 +21,10 @@ A PR is **denied** when it touches:
   authorized sync bot's own snapshot PRs.
 
 The **authorized sync-bot update path**: gate/policy changes are legitimate only
-when the PR is authored by the sync-bot account **and** its head branch matches
-the attempt-key pattern ``sync/<hash>``. That lets the bot's snapshot PRs (which
-regenerate ``publish-policy.json`` and modernize the workflow) merge, while any
-other actor renaming/deleting the gate or editing the policy is blocked. The
+when the PR is authored by the sync-bot account and its attempt branch is bound
+to the PR base. New attempts use ``sync/<base>/<hash>``; the legacy
+``sync/<hash>`` form is accepted only on the repository's verified default
+branch so the one-time policy upgrade cannot deadlock. The
 gate itself being a **required status check under a branch ruleset** (see
 ``policy_gate_ruleset.sh``) means renaming/removing the workflow in a PR cannot
 substitute a passing check — the required check simply never reports.
@@ -59,11 +59,11 @@ WORKFLOWS_PREFIX = ".github/workflows/"
 GATE_DIR_PREFIX = ".github/publish-policy/"
 GATE_SCRIPT_PATH = GATE_DIR_PREFIX + "policy_gate.py"
 
-# Authorized sync-bot attempt-key branch pattern: ``sync/<hash>`` where the hash
-# is the opaque public-tree attempt key (lowercase hex, >= 7 chars — sync.py
-# derives a 12-char prefix of the tree SHA). Anchored so only that exact shape
-# qualifies for the maintainer update path.
-SYNC_BRANCH_RE = re.compile(r"^sync/[0-9a-f]{7,64}$")
+# Attempt refs are either the legacy default-only ``sync/<hash>`` form or the
+# base-bound ``sync/<public-branch>/<hash>`` form. The final slash separates the
+# opaque tree hash, so public branch names may themselves contain slashes.
+LEGACY_SYNC_BRANCH_RE = re.compile(r"^sync/[0-9a-f]{7,64}$")
+MAPPED_SYNC_BRANCH_RE = re.compile(r"^sync/(?P<base>.+)/(?P<key>[0-9a-f]{7,64})$")
 
 # Exit codes for the CLI (the workflow branches on these; the required check
 # reports failure to the ruleset on non-zero).
@@ -73,11 +73,12 @@ EXIT_INFRA = 2
 
 # The only policy schema version this gate understands. A policy declaring any
 # other version is rejected (fail closed) rather than interpreted optimistically.
-EXPECTED_SCHEMA_VERSION = 1
+EXPECTED_SCHEMA_VERSION = 2
 
 # A well-formed source hash: ``sha256:`` + 64 lowercase hex. The gate rejects a
 # policy whose hash does not match this shape (fail closed on a malformed hash).
 _SOURCE_HASH_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+_PUBLIC_BRANCH_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
 
 
 class UnsupportedPattern(ValueError):
@@ -283,6 +284,24 @@ def load_policy(path: str) -> dict:
     for pat in bp:
         validate_pattern(pat)  # UnsupportedPattern (a ValueError) -> fail closed
 
+    branches = policy.get("published_branches")
+    if (not isinstance(branches, list) or not branches
+            or not all(isinstance(branch, str) and branch for branch in branches)
+            or branches != sorted(set(branches))):
+        raise ValueError(
+            "publish-policy.json 'published_branches' must be a non-empty, "
+            "sorted list of unique strings"
+        )
+    for branch in branches:
+        if (not _PUBLIC_BRANCH_RE.fullmatch(branch) or '..' in branch
+                or branch.endswith(('/', '.')) or '//' in branch
+                or '@{' in branch or branch == '@'
+                or any(component.startswith('.') or component.endswith('.lock')
+                       for component in branch.split('/'))):
+            raise ValueError(
+                f"publish-policy.json contains unsafe published branch {branch!r}"
+            )
+
     sh = policy.get("source_hash")
     if not isinstance(sh, str) or not _SOURCE_HASH_RE.match(sh):
         raise ValueError("publish-policy.json 'source_hash' must be 'sha256:<64 hex>'")
@@ -292,6 +311,10 @@ def load_policy(path: str) -> dict:
 
 def blocked_paths(policy: dict) -> list:
     return [p for p in policy.get("blocked_paths", []) if isinstance(p, str)]
+
+
+def published_branches(policy: dict) -> list:
+    return [p for p in policy.get("published_branches", []) if isinstance(p, str)]
 
 
 # ---------------------------------------------------------------------------
@@ -319,9 +342,12 @@ def is_authorized_sync_bot(
     pr_author: Optional[str],
     pr_head_ref: Optional[str],
     sync_bot_login: Optional[str],
+    pr_base_ref: Optional[str] = None,
+    allowed_bases: Iterable[str] = (),
+    verified_default_branch: Optional[str] = None,
 ) -> bool:
     """The authorized maintainer update path: PR authored by the configured
-    sync-bot account **and** on an attempt-key branch ``sync/<hash>``.
+    sync-bot account **and** on an attempt branch bound to the PR base.
 
     Both conditions are required — a bot pushing to a non-attempt branch, or
     anyone else pushing to a ``sync/<hash>`` branch, is **not** authorized. When
@@ -332,9 +358,14 @@ def is_authorized_sync_bot(
         return False
     if not pr_author or pr_author.lower() != sync_bot_login.lower():
         return False
-    if not pr_head_ref or not SYNC_BRANCH_RE.match(pr_head_ref):
+    if not pr_head_ref or not pr_base_ref or pr_base_ref not in set(allowed_bases):
         return False
-    return True
+    mapped = MAPPED_SYNC_BRANCH_RE.fullmatch(pr_head_ref)
+    if mapped:
+        return mapped.group("base") == pr_base_ref
+    if LEGACY_SYNC_BRANCH_RE.fullmatch(pr_head_ref):
+        return bool(verified_default_branch and pr_base_ref == verified_default_branch)
+    return False
 
 
 @dataclass
@@ -369,7 +400,9 @@ def evaluate(
     *,
     pr_author: Optional[str] = None,
     pr_head_ref: Optional[str] = None,
+    pr_base_ref: Optional[str] = None,
     sync_bot_login: Optional[str] = None,
+    verified_default_branch: Optional[str] = None,
 ) -> Decision:
     """Pure decision core: (base policy + changed files + PR author/branch) ->
     allow/deny.
@@ -378,13 +411,19 @@ def evaluate(
       export-ignore-filtered, so they never carry blocked content anyway).
     * A **policy/gate change** (``publish-policy.json`` or
       ``.github/workflows/``) is denied unless the PR is the authorized sync
-      bot's own snapshot (author + ``sync/<hash>`` branch).
+      bot's own snapshot (author + base-bound namespaced attempt branch, or the
+      verified-default-only legacy ``sync/<hash>`` form).
 
     Findings are collected (not short-circuited) so the PR author sees every
     problem at once.
     """
 
-    authorized = is_authorized_sync_bot(pr_author, pr_head_ref, sync_bot_login)
+    authorized = is_authorized_sync_bot(
+        pr_author, pr_head_ref, sync_bot_login,
+        pr_base_ref=pr_base_ref,
+        allowed_bases=published_branches(policy),
+        verified_default_branch=verified_default_branch,
+    )
     globs = blocked_paths(policy)
     violations: list = []
     for raw in changed_files:
@@ -455,6 +494,15 @@ def changed_files_count(repo: str, pr_number: int, runner: CommandRunner = _run)
         return int((res.stdout or "").strip())
     except ValueError as exc:
         raise RuntimeError(f"could not read changed_files count: {exc}") from exc
+
+
+def repository_default_branch(repo: str, runner: CommandRunner = _run) -> str:
+    """Resolve the verified public default from the trusted repository API."""
+
+    res = runner(["gh", "api", f"repos/{repo}", "--jq", ".default_branch"])
+    if res.returncode != 0 or not (res.stdout or "").strip():
+        raise RuntimeError(f"cannot resolve repository default branch: {res.stderr.strip()}")
+    return res.stdout.strip()
 
 
 def list_changed_files(
@@ -531,6 +579,8 @@ def main(argv: Optional[list] = None, runner: CommandRunner = _run) -> int:
     parser.add_argument("--pr", required=True, type=int, help="pull request number")
     parser.add_argument("--pr-author", default="", help="PR author login (from the event payload)")
     parser.add_argument("--pr-head-ref", default="", help="PR head branch ref (from the event payload)")
+    parser.add_argument("--base-ref", required=True,
+                        help="PR base branch ref (from the event payload)")
     parser.add_argument("--sync-bot-login", default="",
                         help="authorized sync-bot account login (enables the maintainer update path)")
     parser.add_argument("--changed-files-file", default="",
@@ -542,6 +592,12 @@ def main(argv: Optional[list] = None, runner: CommandRunner = _run) -> int:
         policy = load_policy(args.policy)
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         print(f"policy-gate: infra error: cannot load policy: {exc}", file=sys.stderr)
+        return EXIT_INFRA
+
+    try:
+        verified_default = repository_default_branch(args.repo, runner=runner)
+    except RuntimeError as exc:
+        print(f"policy-gate: infra error: {exc}", file=sys.stderr)
         return EXIT_INFRA
 
     try:
@@ -564,7 +620,9 @@ def main(argv: Optional[list] = None, runner: CommandRunner = _run) -> int:
         changed,
         pr_author=args.pr_author or None,
         pr_head_ref=args.pr_head_ref or None,
+        pr_base_ref=args.base_ref,
         sync_bot_login=args.sync_bot_login or None,
+        verified_default_branch=verified_default,
     )
     print(decision.summary())
     return EXIT_ALLOW if decision.allowed else EXIT_DENY
