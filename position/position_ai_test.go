@@ -258,7 +258,7 @@ func TestConcurrency(t *testing.T) {
 					// Rewind a small amount to avoid excessive complexity/errors
 					// Be careful: Rewinding based on current offset read concurrently
 					// could be problematic itself. Rewind small fixed/random amounts.
-					rewindAmount := rand.Intn(5) + 1    // Rewind 1 to 5 chars
+					rewindAmount := rand.Intn(5) + 1         // Rewind 1 to 5 chars
 					_ = p.Rewind(rewindAmount, rewindAmount) // Ignore error for simplicity in concurrent test
 				case op < 85: // Copy (5% chance)
 					_ = p.Copy() // Just perform the copy, don't use result extensively here
