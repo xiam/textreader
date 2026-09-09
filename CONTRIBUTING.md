@@ -35,6 +35,18 @@ steps, may be declined or reworked. If you believe a change to the project's
 tooling is warranted, please open an issue to discuss it first so we can agree
 on the approach before you invest time in a PR.
 
+Part of this is enforced automatically. The `policy-gate` check fails a pull
+request that touches any of:
+
+- a path listed under `blocked_paths` in `publish-policy.json`;
+- `publish-policy.json` itself;
+- `.github/workflows/` or `.github/publish-policy/` — the check's own code.
+
+The check reads both the policy and its own code from the base branch and never
+checks out or runs anything from the pull request, so a PR cannot switch off the
+check that judges it. If your change genuinely needs one of those paths, open an
+issue first and a maintainer will apply it separately.
+
 ## Reporting issues
 
 Found a bug or have a feature idea? Please open an issue with a clear
