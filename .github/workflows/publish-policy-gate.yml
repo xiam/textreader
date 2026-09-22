@@ -77,7 +77,12 @@ jobs:
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
           PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
           PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
-          SYNC_BOT_LOGIN: ${{ vars.GITHUB_SYNC_BOT_LOGIN }}
+          # Repository (Actions) variable naming the publisher's login, e.g.
+          # `xiam-publisher[bot]`. It must NOT start with `GITHUB_` — GitHub
+          # reserves that prefix for its own variables and refuses to create
+          # such a repository variable (HTTP 422), which left the gate
+          # unconfigurable and failing closed on every PR (ci-cd#280).
+          SYNC_BOT_LOGIN: ${{ vars.PUBLISH_POLICY_BOT_LOGIN }}
         run: |
           python3 .github/publish-policy/policy_gate.py \
             --policy publish-policy.json \
