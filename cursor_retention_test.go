@@ -1,6 +1,7 @@
 package textreader_test
 
 import (
+	"io"
 	"strings"
 	"testing"
 
@@ -8,6 +9,46 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/xiam/textreader"
 )
+
+// TestRetentionLimitAllowsRuneThatFits covers a retention limit that is large
+// enough for the next rune but smaller than a maximal rune.
+func TestRetentionLimitAllowsRuneThatFits(t *testing.T) {
+	t.Run("byte source", func(t *testing.T) {
+		tr := textreader.NewReader(
+			strings.NewReader("ab"),
+			textreader.WithCapacity(4),
+			textreader.WithMaxRetained(1),
+		)
+
+		cp := tr.Checkpoint()
+		defer func() { _ = cp.Release() }()
+
+		lr, err := tr.ReadLocatedRune()
+		require.NoError(t, err)
+		assert.Equal(t, 'a', lr.Rune())
+
+		_, err = tr.ReadLocatedRune()
+		assert.ErrorIs(t, err, textreader.ErrRetentionExceeded)
+	})
+
+	t.Run("rune source", func(t *testing.T) {
+		tr := textreader.NewRuneReader(
+			&runeOnlySource{runes: []rune("ab")},
+			textreader.WithCapacity(4),
+			textreader.WithMaxRetained(1),
+		)
+
+		cp := tr.Checkpoint()
+		defer func() { _ = cp.Release() }()
+
+		lr, err := tr.ReadLocatedRune()
+		require.NoError(t, err)
+		assert.Equal(t, 'a', lr.Rune())
+
+		_, err = tr.ReadLocatedRune()
+		assert.ErrorIs(t, err, textreader.ErrRetentionExceeded)
+	})
+}
 
 // TestRetentionBudgetEnforcedOnConsumption covers data buffered before a
 // checkpoint: the limit must bound what the checkpoint makes the reader retain,
@@ -95,4 +136,28 @@ func TestBulkReadBudgetIsAtomic(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 4, n)
 	assert.Equal(t, "abcd", string(small))
+}
+
+// TestBulkReadBudgetUsesActualAvailability covers a destination larger than the
+// remaining budget: the budget must be judged against the bytes that would
+// really advance the cursor, not against the caller's destination size.
+func TestBulkReadBudgetUsesActualAvailability(t *testing.T) {
+	tr := textreader.NewReader(
+		strings.NewReader("a"),
+		textreader.WithMaxRetained(1),
+	)
+
+	cp := tr.Checkpoint()
+	defer func() { _ = cp.Release() }()
+
+	buf := make([]byte, 4096)
+
+	n, err := tr.Read(buf)
+	require.NoError(t, err, "the one available byte fits a one-byte budget")
+	assert.Equal(t, 1, n)
+	assert.Equal(t, "a", string(buf[:n]))
+
+	n, err = tr.Read(buf)
+	require.ErrorIs(t, err, io.EOF, "the budget is spent and the source is drained")
+	assert.Equal(t, 0, n)
 }

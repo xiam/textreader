@@ -6,6 +6,10 @@ This file documents the notable changes to `textreader`. The format follows
 
 ## Unreleased
 
+## v0.2.1 - 2026-09-25
+
+No library changes. Repository maintenance only.
+
 ## v0.2.0 - 2026-09-22
 
 ### Added

@@ -2,6 +2,7 @@ package textreader_test
 
 import (
 	"bufio"
+	"io"
 	"strings"
 	"testing"
 
@@ -57,4 +58,41 @@ func TestPeekEndsUnreadAuthority(t *testing.T) {
 	r, _, err = tr.ReadRune()
 	require.NoError(t, err)
 	assert.Equal(t, 'b', r, "the peek must not rewind the cursor")
+}
+
+// TestNonConsumingCallsDoNotMoveTheCursor covers the logical cursor across
+// operations that do not consume input. Reading one byte of a two-byte rune
+// leaves a partial sequence pending; peeking, marking, and a zero relative seek
+// must each leave the cursor exactly where it was, and the mark must record that
+// same position.
+func TestNonConsumingCallsDoNotMoveTheCursor(t *testing.T) {
+	tr := textreader.NewReader(strings.NewReader("éx"))
+
+	buf := make([]byte, 1)
+
+	n, err := tr.Read(buf)
+	require.NoError(t, err)
+	require.Equal(t, 1, n)
+
+	before := tr.Cursor()
+
+	peeked, err := tr.PeekRune()
+	require.NoError(t, err)
+	assert.Equal(t, before, tr.Cursor(), "peeking must not move the cursor")
+
+	cp := tr.Checkpoint()
+	defer func() { _ = cp.Release() }()
+	assert.Equal(t, before, tr.Cursor(), "marking must not move the cursor")
+	assert.Equal(t, before, cp.Pos(), "the mark must record the cursor it was taken at")
+
+	off, err := tr.Seek(0, io.SeekCurrent)
+	require.NoError(t, err)
+	assert.Equal(t, int64(before.ByteOffset()), off)
+	assert.Equal(t, before, tr.Cursor(), "a zero relative seek must not move the cursor")
+
+	// The peek still describes the location the next read returns, even though
+	// neither of them moved the stored cursor.
+	read, err := tr.ReadLocatedRune()
+	require.NoError(t, err)
+	assert.Equal(t, peeked.Pos(), read.Pos())
 }
