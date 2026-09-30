@@ -106,6 +106,9 @@ _ = mark.Reset()                      // replay the same runes exactly
   drops the retained input; `Release()` abandons the checkpoint whatever the
   cursor is. A checkpoint may be reset repeatedly until it is committed or
   released; after that, every method on it returns `ErrCheckpointReleased`.
+- **`Remark`** — re-arms a released checkpoint value at the current position
+  instead of allocating a fresh one, for callers that own a fixed set of
+  checkpoint slots. See [Reusing checkpoints](#reusing-checkpoints).
 - **`SpanText` / `Context`** — non-mutating access to the retained bytes, for
   diagnostics. Neither moves the cursor.
 - **`Cursor()` / `Pos()`** — the logical position, never physical read-ahead.
@@ -162,6 +165,55 @@ tr := textreader.NewReader(src,
   than by this limit, and it stays bounded while the cursor cannot advance.
 - Without a limit, a checkpoint held across a large read-ahead grows the buffer
   as needed, which is what makes a long token recoverable.
+
+### Reusing checkpoints
+
+`Checkpoint` allocates a new value on every call. A consumer that makes a
+mark per token — a maximal-munch lexer, for example — pays that allocation for
+every token even though it only keeps a bounded window of marks. `Remark`
+exists for exactly that caller: it re-arms a released checkpoint value at the
+current logical position, so the same value can stand in for a fresh mark.
+
+```go
+slot := tr.Checkpoint() // arm the slot once, at the first token
+
+for {
+    token, err := scan(tr) // speculative read from the mark
+    if err != nil {
+        break
+    }
+    if err := slot.Release(); err != nil { // end this token's mark
+        break
+    }
+    if err := tr.Remark(slot); err != nil { // re-arm the same value, no allocation
+        break
+    }
+}
+```
+
+- Re-arming is **opt-in and additive**: `Checkpoint` and the constructors are
+  unchanged, and a caller that never calls `Remark` behaves exactly as before.
+- **Only a released value may be re-armed.** An active checkpoint — on this
+  reader or another — is refused with `ErrCheckpointActive` and left untouched,
+  so a mark another consumer still relies on is never retargeted. A nil value
+  is refused with `ErrCheckpointReleased`.
+- A released value **carries no reader reference**, so it may be re-armed on any
+  reader, including a different one. The reader pointer is claimed by
+  compare-and-swap, so one value is active on at most one reader at a time.
+- After a successful `Remark` the value is active and behaves exactly like a
+  fresh mark: `Pos` reports the marked position, `Reset` replays the input read
+  since the mark, and `Commit` or `Release` ends the retention. The reader
+  retains from the oldest active checkpoint as usual, and the retention limit
+  applies to a re-armed checkpoint the same way it applies to a fresh one.
+- The allocation cost is therefore **bounded by the number of slots** the caller
+  owns, not by the number of marks made.
+- **A reusable checkpoint is one shared mutable slot.** Re-arming changes what
+  every alias of the value refers to: a reference retained from before
+  `Release` silently regains `Pos`, `Reset`, `Commit`, and `Release` authority
+  over the new mark the moment the slot is re-armed. The reader cannot
+  distinguish generations of a reused slot and cannot detect the misuse. Keep
+  all references to a released slot under one logical owner — do not retain or
+  use stale references after handing the slot back for reuse.
 
 ### Rune sources
 

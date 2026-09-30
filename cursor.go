@@ -3,6 +3,7 @@ package textreader
 import (
 	"errors"
 	"fmt"
+	"sync"
 	"sync/atomic"
 )
 
@@ -21,6 +22,12 @@ var (
 	// cursor has moved behind. The caller must Reset back to the checkpoint or
 	// abandon it with Release.
 	ErrCheckpointRewound = errors.New("textreader: logical cursor is before the checkpoint")
+
+	// ErrCheckpointActive reports a Remark on a checkpoint that is still
+	// active, on the reader or another. An active checkpoint owns its mark and
+	// its retained input, so it cannot be re-armed until it is committed or
+	// released.
+	ErrCheckpointActive = errors.New("textreader: checkpoint already active")
 
 	// ErrPositionOutOfBuffer reports that a position or span is outside the
 	// bytes the reader still retains.
@@ -192,17 +199,25 @@ func (lr LocatedRune) String() string { return string(lr.r) }
 // A checkpoint is reader-wide state, not goroutine-local. Methods on the
 // reader and on the checkpoint are safe for concurrent use, but two goroutines
 // sharing one reader share the same logical cursor and the same checkpoints.
+//
+// The fields below the reader pointer are guarded by mu, not by any reader's
+// mutex: Remark can move a released value from one reader to another, so the
+// value's own lock is the only lock that is stable for its whole life.
+// Readers that hold the value's pointer (Active, Reset, Commit, Release) must
+// re-verify under mu that the value is still armed on the reader they locked;
+// a value that migrates or is released in between must not be operated on.
 type Checkpoint struct {
 	// reader is nil once the checkpoint is committed or released, which is how
 	// a stale handle is detected without touching reader state.
 	reader atomic.Pointer[TextReader]
 
+	// mu guards pos, byteOffset, runeOffset, and active.
+	mu sync.Mutex
+
 	pos        Pos
 	byteOffset int
 	runeOffset int
-
-	// active is guarded by reader.mu.
-	active bool
+	active     bool
 }
 
 // Checkpoint records the current logical position and starts retaining input
@@ -219,20 +234,116 @@ func (t *TextReader) Checkpoint() *Checkpoint {
 	// stands and never settles, rewinds, or otherwise moves it. A pending
 	// partial UTF-8 sequence is deliberately left pending, so the marked
 	// position is exactly the one Pos reported before the call.
-	c := &Checkpoint{
-		pos:        t.cursorLocked(),
-		byteOffset: t.pos.Offset(),
-		runeOffset: t.runeOffset,
-		active:     true,
-	}
+	c := &Checkpoint{active: true}
+	c.mu.Lock()
+	c.pos = t.cursorLocked()
+	c.byteOffset = t.pos.Offset()
+	c.runeOffset = t.runeOffset
+	c.mu.Unlock()
 	c.reader.Store(t)
 	t.checkpoints = append(t.checkpoints, c)
 
 	return c
 }
 
+// Remark re-arms a checkpoint value c at the reader's current logical position
+// so the caller can reuse it instead of calling Checkpoint and allocating a new
+// mark. It is the opt-in half of the checkpoint-reuse capability: a consumer
+// that owns a fixed set of checkpoint slots — a lexer with a bounded mark
+// window, for example — arms each slot once with Checkpoint and then re-arms
+// the same values in place. Re-arming allocates no new checkpoint, and a
+// checkpoint that has never been released keeps its value forever, so the
+// allocation cost is bounded by the number of slots, not by the number of marks
+// made.
+//
+// Remark is a non-consuming operation, like Checkpoint: it records the logical
+// cursor as it stands, never moves it, and leaves a pending partial UTF-8
+// sequence pending. After a successful Remark the checkpoint is active and
+// behaves exactly like a fresh Checkpoint: Pos reports the marked position,
+// Reset replays the input read since the mark, and Commit or Release ends the
+// retention. The reader retains input from the oldest active checkpoint, as
+// before, and the retention limit applies to a re-armed checkpoint the same way
+// it applies to a fresh one.
+//
+// Only a released checkpoint may be re-armed:
+//
+//   - a nil checkpoint returns ErrCheckpointReleased;
+//   - an active checkpoint — on this reader or another — returns
+//     ErrCheckpointActive and is left untouched. Re-arming a checkpoint that is
+//     still holding a mark would silently retarget the mark another consumer
+//     relies on, which is exactly the misuse Remark must not permit. A caller
+//     that wants to move a slot's mark releases the old mark first and then
+//     re-arms;
+//   - the reader pointer is claimed by compare-and-swap, so one checkpoint
+//     value is active on at most one reader at a time. A value that is active
+//     on another reader cannot be adopted; a value that has been released
+//     carries no reader reference and may be re-armed on any reader, including
+//     one different from the reader it was last armed on. Re-arming never
+//     touches the storage of a reader the value is no longer armed on.
+//
+// Ownership discipline. A reusable checkpoint is one shared mutable slot, not
+// a per-mark object: re-arming the same value changes what every alias of it
+// refers to. If a reference to the same *Checkpoint is retained from before
+// Release, that old reference silently regains Pos, Reset, Commit, and Release
+// authority over the new mark the moment the slot is re-armed — the reader
+// cannot distinguish an alias from the slot owner and cannot detect the
+// misuse, because generations of a reused slot are not distinguished. It is
+// therefore the caller's discipline to keep all references to a released slot
+// under one logical owner: once a slot is handed back for reuse, do not
+// retain or use stale references to it. This is the aliasing contract the
+// linked issue requires be stated explicitly.
+//
+// A released checkpoint does not retain input: release ends its registration,
+// so re-arming re-registers the value without holding any extra storage. The
+// checkpoint's own state is private and never exposed, so a re-armed value is
+// indistinguishable in behavior from a fresh one.
+//
+// A failed `Remark` leaves the checkpoint exactly as it was: a released value
+// stays released and an active value stays active, and the reader is left
+// exactly as it was.
+func (t *TextReader) Remark(c *Checkpoint) error {
+	if c == nil {
+		return ErrCheckpointReleased
+	}
+
+	// Claim the value before touching reader state. A released checkpoint has
+	// a nil reader pointer; if the CAS fails, the value is active somewhere —
+	// on this reader or another — and must be refused rather than retargeted.
+	if !c.reader.CompareAndSwap(nil, t) {
+		return ErrCheckpointActive
+	}
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	// The CAS proved c is not active on any reader, so the value is not in the
+	// active set: re-arming appends it. The marked position is the logical
+	// cursor exactly as it stands, the same non-consuming guarantee Checkpoint
+	// gives. The field writes take c.mu, not t.mu: a concurrent Pos or a
+	// concurrent operation on a former owner must observe either the old or
+	// the new values whole, never a torn mix.
+	c.mu.Lock()
+	c.pos = t.cursorLocked()
+	c.byteOffset = t.pos.Offset()
+	c.runeOffset = t.runeOffset
+	c.active = true
+	c.mu.Unlock()
+	t.checkpoints = append(t.checkpoints, c)
+
+	return nil
+}
+
 // Pos returns the position that was marked.
-func (c *Checkpoint) Pos() Pos { return c.pos }
+func (c *Checkpoint) Pos() Pos {
+	if c == nil {
+		return Pos{}
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return c.pos
+}
 
 // Active reports whether the checkpoint can still be reset, committed, or
 // released.
@@ -249,7 +360,15 @@ func (c *Checkpoint) Active() bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	return c.active
+	// Re-verify under c.mu: the value may have migrated to another reader or
+	// been released between the Load and the lock, in which case its state
+	// here is no longer this reader's to report.
+	c.mu.Lock()
+	owner := c.reader.Load()
+	still := c.active && owner != nil && owner == t
+	c.mu.Unlock()
+
+	return still
 }
 
 // Reset restores the logical cursor to the marked position, so subsequent reads
@@ -278,12 +397,23 @@ func (c *Checkpoint) Reset() error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	if !c.active {
+	// Re-verify under c.mu and copy the mark's fields there: the value may
+	// have been released or migrated to another reader between the Load and
+	// the lock, in which case this reader must not operate on its state. Once
+	// verified here while holding t.mu the value cannot move again until the
+	// lock is released: release and same-reader operations need t.mu, and
+	// another reader's Remark cannot claim a value that still points at t.
+	c.mu.Lock()
+	if !c.active || c.reader.Load() != t {
+		c.mu.Unlock()
 		return ErrCheckpointReleased
 	}
+	byteOff := c.byteOffset
+	runeOff := c.runeOffset
+	c.mu.Unlock()
 
 	bufferStart := t.pos.Offset() - t.r
-	idx := c.byteOffset - bufferStart
+	idx := byteOff - bufferStart
 	if idx < 0 || idx > t.w {
 		return ErrPositionOutOfBuffer
 	}
@@ -293,15 +423,15 @@ func (c *Checkpoint) Reset() error {
 	// crosses only the lines between here and the mark, which is what keeps a
 	// checkpoint cheap to reset.
 	switch cur := t.pos.Offset(); {
-	case cur > c.byteOffset:
-		if err := t.pos.Rewind(cur-c.byteOffset, t.runeOffset-c.runeOffset); err != nil {
+	case cur > byteOff:
+		if err := t.pos.Rewind(cur-byteOff, t.runeOffset-runeOff); err != nil {
 			return fmt.Errorf("checkpoint reset: %w", err)
 		}
-	case cur < c.byteOffset:
+	case cur < byteOff:
 		t.pos.Scan(t.buf[t.r:idx])
 	}
 
-	t.runeOffset = c.runeOffset
+	t.runeOffset = runeOff
 	t.r = idx
 	t.lastRuneSize = -1
 	t.utf8CarryLen = 0
@@ -328,10 +458,18 @@ func (c *Checkpoint) Commit() error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	if !c.active {
+	// Re-verify under c.mu: the value may have been released here and
+	// re-armed on another reader between the Load and the lock, in which
+	// case its mark is no longer this reader's to commit.
+	c.mu.Lock()
+	if !c.active || c.reader.Load() != t {
+		c.mu.Unlock()
 		return ErrCheckpointReleased
 	}
-	if t.pos.Offset() < c.byteOffset {
+	byteOff := c.byteOffset
+	c.mu.Unlock()
+
+	if t.pos.Offset() < byteOff {
 		return ErrCheckpointRewound
 	}
 
@@ -353,9 +491,15 @@ func (c *Checkpoint) Release() error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	if !c.active {
+	// Re-verify under c.mu: the value may have been released here and
+	// re-armed on another reader between the Load and the lock, in which
+	// case its mark is no longer this reader's to release.
+	c.mu.Lock()
+	if !c.active || c.reader.Load() != t {
+		c.mu.Unlock()
 		return ErrCheckpointReleased
 	}
+	c.mu.Unlock()
 
 	return t.releaseCheckpointLocked(c)
 }
@@ -368,7 +512,14 @@ func (t *TextReader) releaseCheckpointLocked(c *Checkpoint) error {
 		}
 	}
 
+	// Deregistration under c.mu: a concurrent Pos or Remark on another
+	// reader must observe either the fully armed or the fully released
+	// state, never a mix, and the reader pointer is cleared only after the
+	// state is, so a CAS in Remark cannot claim a value that is still
+	// armed here.
+	c.mu.Lock()
 	c.active = false
+	c.mu.Unlock()
 	c.reader.Store(nil)
 
 	return nil

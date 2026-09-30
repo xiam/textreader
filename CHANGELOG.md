@@ -6,6 +6,20 @@ This file documents the notable changes to `textreader`. The format follows
 
 ## Unreleased
 
+## v0.3.0 - 2026-09-28
+
+### Added
+
+- Add `Remark` to re-arm a released checkpoint at the current position without
+  allocating a new value. A caller that owns a fixed set of checkpoint slots
+  re-arms the same value instead of marking a fresh one.
+- Add `ErrCheckpointActive`, which `Remark` returns when the value is still
+  active on this reader or another.
+- Add `cursor_remark_test.go`, `BenchmarkRemarkSteadyState`, and
+  `BenchmarkFreshCheckpointSteadyState` for the reuse behavior and its
+  allocation cost. Steady-state reuse costs 8 allocations per 1,024-token
+  operation; a fresh checkpoint costs 1,031 for the same operation.
+
 ## v0.2.1 - 2026-09-25
 
 No library changes. Repository maintenance only.

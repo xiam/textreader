@@ -338,9 +338,19 @@ func (t *TextReader) retainFloor() int {
 	floor := t.pos.Offset()
 
 	for _, c := range t.checkpoints {
-		if c != nil && c.active && c.byteOffset < floor {
+		if c == nil {
+			continue
+		}
+
+		// A concurrent Pos or a Remark on another reader may be reading or
+		// rewriting these fields right now, so the floor is sampled under
+		// the value's own lock. The value is in this reader's active set,
+		// so it is still armed on this reader.
+		c.mu.Lock()
+		if c.active && c.byteOffset < floor {
 			floor = c.byteOffset
 		}
+		c.mu.Unlock()
 	}
 
 	return floor
