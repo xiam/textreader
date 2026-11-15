@@ -6,6 +6,31 @@ This file documents the notable changes to `textreader`. The format follows
 
 ## Unreleased
 
+## v0.4.0 - 2026-11-15
+
+### Added
+
+- Add `position.Position.TrimBefore()` to drop the line entries that a
+  `Rewind()` to an offset at or above a floor no longer needs. A `Position`
+  never trims itself.
+
+### Changed
+
+- Change `Pos()` so the returned copy holds only the line positions the reader
+  keeps. The reader drops the line positions behind the start of its buffer.
+  `Rewind()` on the copy can return an error for a target behind the buffer
+  start. A `Rewind()` to offset 0 still resets the copy.
+
+### Fixed
+
+- Fix the memory growth of the per-line position table. The table grew by one
+  entry per newline for the whole stream. The reader now drops the entries
+  behind its buffer, so the table memory is bounded by the buffer size.
+- Fix `Checkpoint.Reset()` when a `Read()` ends inside a multibyte rune.
+  `Reset()` now restores the exact line and column of the checkpoint.
+- Fix `Checkpoint.Reset()` to a checkpoint marked inside a multibyte rune.
+  `Reset()` now keeps the partial rune, so the next `Read()` completes it.
+
 ## v0.3.0 - 2026-09-28
 
 ### Added

@@ -372,6 +372,17 @@ func (t *TextReader) compact() {
 	copy(t.buf, t.buf[shift:t.w])
 	t.w -= shift
 	t.r -= shift
+
+	t.trimLines()
+}
+
+// trimLines drops the per-line position entries no Rewind can still need. The
+// oldest byte a Rewind can reach is the physical buffer start: UnreadRune, a
+// backward Seek and Checkpoint.Reset all move only within the buffer, and the
+// buffer start is never above the oldest active checkpoint. It is called
+// wherever the buffer start advances.
+func (t *TextReader) trimLines() {
+	t.pos.TrimBefore(t.pos.Offset() - t.r)
 }
 
 // accountBytes advances the logical position over b, which continues the stream
@@ -651,12 +662,20 @@ func (t *TextReader) Read(p []byte) (n int, err error) {
 			// data is remembered and surfaced to the caller and later reads.
 			n, readErr = t.readInto(p[filled:])
 
-			t.accountBytes(p[filled : filled+n])
-
-			// Reset the buffer since we dumped it all into
+			// Reset the buffer since we dumped it all into p. Nothing behind
+			// the cursor stays rewindable once this Read returns, so the line
+			// table is trimmed to the cursor after every capacity-sized chunk
+			// instead of growing with len(p).
 			t.r = 0
 			t.w = 0
 			t.lastRuneSize = -1
+
+			for done := 0; done < n; {
+				end := min(done+t.capacity, n)
+				t.accountBytes(p[filled+done : filled+end])
+				t.trimLines()
+				done = end
+			}
 
 			filled += n
 
@@ -792,6 +811,12 @@ func (t *TextReader) Seek(offset int64, whence int) (int64, error) {
 //
 // Pos reports the logical next-read position: bytes buffered for look-ahead are
 // never reflected in it.
+//
+// The reader drops the line positions of input behind the start of its buffer
+// (see position.Position.TrimBefore), and the returned copy holds the same line
+// positions. Rewind on the copy is exact for any target at or after the buffer
+// start; a target further back can return an error. A Rewind to offset 0 still
+// resets the copy.
 func (t *TextReader) Pos() *position.Position {
 	t.mu.Lock()
 	defer t.mu.Unlock()
