@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
+	"unicode/utf8"
 )
 
 var (
@@ -211,13 +212,30 @@ type Checkpoint struct {
 	// a stale handle is detected without touching reader state.
 	reader atomic.Pointer[TextReader]
 
-	// mu guards pos, byteOffset, runeOffset, and active.
+	// mu guards pos, byteOffset, runeOffset, carry, carryLen, and active.
 	mu sync.Mutex
 
 	pos        Pos
 	byteOffset int
 	runeOffset int
 	active     bool
+
+	// carry and carryLen copy the reader's pending partial UTF-8 sequence at
+	// the mark. Its bytes count toward byteOffset but not toward the line
+	// tables, and they may not be in the buffer, so Reset restores them from
+	// here.
+	carry    [utf8.UTFMax]byte
+	carryLen int
+}
+
+// markLocked records the reader's logical cursor in c. The caller holds t.mu
+// and c.mu.
+func (c *Checkpoint) markLocked(t *TextReader) {
+	c.pos = t.cursorLocked()
+	c.byteOffset = t.pos.Offset()
+	c.runeOffset = t.runeOffset
+	c.carry = t.utf8Carry
+	c.carryLen = t.utf8CarryLen
 }
 
 // Checkpoint records the current logical position and starts retaining input
@@ -236,9 +254,7 @@ func (t *TextReader) Checkpoint() *Checkpoint {
 	// position is exactly the one Pos reported before the call.
 	c := &Checkpoint{active: true}
 	c.mu.Lock()
-	c.pos = t.cursorLocked()
-	c.byteOffset = t.pos.Offset()
-	c.runeOffset = t.runeOffset
+	c.markLocked(t)
 	c.mu.Unlock()
 	c.reader.Store(t)
 	t.checkpoints = append(t.checkpoints, c)
@@ -323,9 +339,7 @@ func (t *TextReader) Remark(c *Checkpoint) error {
 	// concurrent operation on a former owner must observe either the old or
 	// the new values whole, never a torn mix.
 	c.mu.Lock()
-	c.pos = t.cursorLocked()
-	c.byteOffset = t.pos.Offset()
-	c.runeOffset = t.runeOffset
+	c.markLocked(t)
 	c.active = true
 	c.mu.Unlock()
 	t.checkpoints = append(t.checkpoints, c)
@@ -410,31 +424,49 @@ func (c *Checkpoint) Reset() error {
 	}
 	byteOff := c.byteOffset
 	runeOff := c.runeOffset
+	carry, carryLen := c.carry, c.carryLen
 	c.mu.Unlock()
 
-	bufferStart := t.pos.Offset() - t.r
+	cur := t.pos.Offset()
+	bufferStart := cur - t.r
 	idx := byteOff - bufferStart
 	if idx < 0 || idx > t.w {
 		return ErrPositionOutOfBuffer
 	}
 
-	// Restore the logical position. The bytes are still retained, so moving
-	// back is an exact inverse of the reads that moved forward. Rewinding
-	// crosses only the lines between here and the mark, which is what keeps a
-	// checkpoint cheap to reset.
-	switch cur := t.pos.Offset(); {
-	case cur > byteOff:
-		if err := t.pos.Rewind(cur-byteOff, t.runeOffset-runeOff); err != nil {
-			return fmt.Errorf("checkpoint reset: %w", err)
+	// The bytes of a pending partial UTF-8 sequence count toward the offset
+	// but not toward the line tables, both now and at the mark. Moving
+	// between the two table offsets keeps the Rewind or Scan below exact;
+	// the mark's own pending bytes are then restored as they were.
+	tableCur := cur - t.utf8CarryLen
+	tableMark := byteOff - carryLen
+	if tableCur < tableMark {
+		from, to := t.r-t.utf8CarryLen, idx-carryLen
+		if from < 0 || to > t.w {
+			return ErrPositionOutOfBuffer
 		}
-	case cur < byteOff:
-		t.pos.Scan(t.buf[t.r:idx])
+		t.pos.AdvanceBytes(-t.utf8CarryLen)
+		t.pos.Scan(t.buf[from:to])
+	} else {
+		// Restore the logical position. The bytes are still retained, so
+		// moving back is an exact inverse of the reads that moved forward.
+		// Rewinding crosses only the lines between here and the mark, which
+		// is what keeps a checkpoint cheap to reset.
+		t.pos.AdvanceBytes(-t.utf8CarryLen)
+		if tableCur > tableMark {
+			if err := t.pos.Rewind(tableCur-tableMark, t.runeOffset-runeOff); err != nil {
+				t.pos.AdvanceBytes(t.utf8CarryLen)
+				return fmt.Errorf("checkpoint reset: %w", err)
+			}
+		}
 	}
+	t.pos.AdvanceBytes(carryLen)
 
 	t.runeOffset = runeOff
 	t.r = idx
 	t.lastRuneSize = -1
-	t.utf8CarryLen = 0
+	t.utf8Carry = carry
+	t.utf8CarryLen = carryLen
 
 	return nil
 }

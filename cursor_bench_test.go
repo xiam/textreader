@@ -168,3 +168,42 @@ func (s *sliceRuneSource) ReadRune() (rune, int, error) {
 	s.pos++
 	return r, len(string(r)), nil
 }
+
+// newlineStream is a long input dense with newlines. Read through a small
+// buffer, it moves the buffer start forward many times, which is where the
+// per-line position table is trimmed.
+var newlineStream = strings.Repeat("ab\n\n", 256<<10)
+
+// BenchmarkNewlineStreamReadRune reads a long newline-dense stream rune by rune
+// through a 4 KiB buffer with no checkpoint, so the buffer compacts many times.
+func BenchmarkNewlineStreamReadRune(b *testing.B) {
+	b.SetBytes(int64(len(newlineStream)))
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		tr := textreader.NewReader(strings.NewReader(newlineStream), textreader.WithCapacity(4096))
+		for {
+			if _, _, err := tr.ReadRune(); err != nil {
+				break
+			}
+		}
+	}
+}
+
+// BenchmarkNewlineStreamRead reads the same stream with Read calls larger than
+// the 4 KiB buffer, so every call takes the direct-read path.
+func BenchmarkNewlineStreamRead(b *testing.B) {
+	p := make([]byte, 32<<10)
+
+	b.SetBytes(int64(len(newlineStream)))
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		tr := textreader.NewReader(strings.NewReader(newlineStream), textreader.WithCapacity(4096))
+		for {
+			if _, err := tr.Read(p); err != nil {
+				break
+			}
+		}
+	}
+}
