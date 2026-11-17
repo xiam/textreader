@@ -35,7 +35,8 @@ var (
 	ErrPositionOutOfBuffer = errors.New("textreader: position outside retained input")
 )
 
-// Option configures a TextReader created by NewReader or NewRuneReader.
+// Option configures a TextReader created by NewReader, NewRuneReader or
+// NewByteReader.
 type Option func(*TextReader)
 
 // WithCapacity sets the reader's buffer capacity in bytes. Values below the
@@ -79,6 +80,9 @@ func WithMaxRetained(n int) Option {
 // Pos values are produced by the reader and are safe to store, compare, and
 // share. The zero Pos is not a valid stream position: a reader always reports
 // Line 1 or greater.
+//
+// On a reader built by NewByteReader each byte is one rune, so RuneOffset
+// equals ByteOffset, and Column counts the bytes since the last 0x0A byte.
 type Pos struct {
 	byteOffset int
 	runeOffset int
@@ -446,7 +450,7 @@ func (c *Checkpoint) Reset() error {
 			return ErrPositionOutOfBuffer
 		}
 		t.pos.AdvanceBytes(-t.utf8CarryLen)
-		t.pos.Scan(t.buf[from:to])
+		t.scanLocked(t.buf[from:to])
 	} else {
 		// Restore the logical position. The bytes are still retained, so
 		// moving back is an exact inverse of the reads that moved forward.

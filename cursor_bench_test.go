@@ -207,3 +207,97 @@ func BenchmarkNewlineStreamRead(b *testing.B) {
 		}
 	}
 }
+
+// binaryDoc holds every byte value, repeated. Half of its bytes are 0x80 or
+// above, which the rune adapter path stores as two bytes each.
+var binaryDoc = func() string {
+	b := make([]byte, 256)
+	for i := range b {
+		b[i] = byte(i)
+	}
+	return strings.Repeat(string(b), 96)
+}()
+
+// BenchmarkByteReaderReadLocatedRune reads binary input byte by byte in byte
+// mode.
+func BenchmarkByteReaderReadLocatedRune(b *testing.B) {
+	b.SetBytes(int64(len(binaryDoc)))
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		tr := textreader.NewByteReader(strings.NewReader(binaryDoc))
+		for {
+			if _, err := tr.ReadLocatedRune(); err != nil {
+				break
+			}
+		}
+	}
+}
+
+// BenchmarkByteAdapterReadLocatedRune reads the same input through
+// NewRuneReader and a byte-to-rune adapter, the path byte mode replaces.
+func BenchmarkByteAdapterReadLocatedRune(b *testing.B) {
+	b.SetBytes(int64(len(binaryDoc)))
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		tr := textreader.NewRuneReader(byteRunes{strings.NewReader(binaryDoc)})
+		for {
+			if _, err := tr.ReadLocatedRune(); err != nil {
+				break
+			}
+		}
+	}
+}
+
+// BenchmarkByteReaderCheckpointReplay is BenchmarkCheckpointReplay on binary
+// input in byte mode.
+func BenchmarkByteReaderCheckpointReplay(b *testing.B) {
+	const window = 16
+
+	b.SetBytes(int64(len(binaryDoc)))
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		tr := textreader.NewByteReader(strings.NewReader(binaryDoc))
+		for {
+			cp := tr.Checkpoint()
+			n := 0
+			for n < window {
+				if _, err := tr.ReadLocatedRune(); err != nil {
+					break
+				}
+				n++
+			}
+			if n == 0 {
+				_ = cp.Release()
+				break
+			}
+			_ = cp.Reset()
+			for j := 0; j < n; j++ {
+				if _, err := tr.ReadLocatedRune(); err != nil {
+					b.Fatal(err)
+				}
+			}
+			_ = cp.Commit()
+		}
+	}
+}
+
+// BenchmarkByteReaderRead reads binary input with Read calls larger than the
+// 4 KiB buffer in byte mode, so every call takes the direct-read path.
+func BenchmarkByteReaderRead(b *testing.B) {
+	p := make([]byte, 32<<10)
+
+	b.SetBytes(int64(len(binaryDoc)))
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		tr := textreader.NewByteReader(strings.NewReader(binaryDoc), textreader.WithCapacity(4096))
+		for {
+			if _, err := tr.Read(p); err != nil {
+				break
+			}
+		}
+	}
+}

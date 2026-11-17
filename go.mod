@@ -1,3 +1,4 @@
+// Deprecated: use github.com/xiam/bytescan/cursor.
 module github.com/xiam/textreader
 
 go 1.21.1

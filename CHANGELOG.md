@@ -6,6 +6,30 @@ This file documents the notable changes to `textreader`. The format follows
 
 ## Unreleased
 
+## v0.5.0 - 2026-11-17
+
+### Added
+
+- Add `NewByteReader()` to read binary input with exact file offsets.
+  `NewByteReader()` accepts the same options as `NewReader()`. `ReadRune()`,
+  `ReadLocatedRune()`, and `PeekRune()` return each byte as one rune of size 1.
+  `ByteOffset()` and `RuneOffset()` both report the file offset. The byte 0x0A
+  ends a line, and `Column()` counts bytes. `Read()`, `SpanText()`, and
+  `Context()` return the raw input bytes. A checkpoint over n bytes retains n
+  bytes.
+- Add `BenchmarkByteReaderReadLocatedRune`, `BenchmarkByteReaderRead`, and
+  `BenchmarkByteReaderCheckpointReplay` for the byte-mode cursor. Add
+  `BenchmarkByteAdapterReadLocatedRune` for the same input through
+  `NewRuneReader()`.
+
+### Deprecated
+
+- Deprecate the `github.com/xiam/textreader` module. Use
+  `github.com/xiam/bytescan/cursor` instead. The `cursor` package has the same
+  API. To migrate, change the import paths to `github.com/xiam/bytescan/cursor`
+  and `github.com/xiam/bytescan/cursor/position`. Rename `TextReader` to
+  `cursor.Reader`.
+
 ## v0.4.0 - 2026-11-15
 
 ### Added
