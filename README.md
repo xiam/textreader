@@ -1,5 +1,15 @@
 # TextReader
 
+> **Deprecated:** use
+> [`github.com/xiam/bytescan/cursor`](https://pkg.go.dev/github.com/xiam/bytescan/cursor),
+> which has the same API. To migrate:
+>
+> - change the import path `github.com/xiam/textreader` to
+>   `github.com/xiam/bytescan/cursor`;
+> - change the import path `github.com/xiam/textreader/position` to
+>   `github.com/xiam/bytescan/cursor/position`;
+> - rename `textreader.TextReader` to `cursor.Reader`.
+
 The `TextReader` package reads Unicode text files while tracking the position
 of the current read and the surrounding text. This is useful for parsers,
 lexers, and any application that benefits from providing detailed context
@@ -18,6 +28,8 @@ around the current read position.
 - **Positioned cursor**: Immutable positions, spans, and located runes; logical
   checkpoints with exact replay; and non-mutating access to the retained text —
   see [Positioned cursor](#positioned-cursor)
+- **Byte mode**: `NewByteReader` reads binary input one byte per rune, with
+  exact file offsets — see [Byte mode](#byte-mode)
 
 ## Use Cases
 
@@ -29,7 +41,8 @@ This package is ideal for:
 This package is **not suitable** for:
 - Random access to large files (use `os.File` instead)
 - High-performance streaming where position tracking isn't needed
-- Binary data processing (designed for UTF-8 text)
+- Binary data processing through the text constructors, which decode UTF-8
+  (use [`NewByteReader`](#byte-mode) instead)
 
 ## Code Example
 
@@ -230,6 +243,31 @@ on a second pass.
 
 See `_examples/positioned-cursor` for a runnable program.
 
+### Byte mode
+
+`NewByteReader` builds the same cursor for binary input. It takes the same
+options as `NewReader`, and it decodes nothing: each byte is one rune, U+0000 to
+U+00FF, of size 1.
+
+```go
+tr := textreader.NewByteReader(conn, textreader.WithMaxRetained(64<<10))
+
+lr, _ := tr.ReadLocatedRune() // the byte 0xFF is rune 0xFF of size 1
+off := lr.Pos().ByteOffset()  // the file offset of that byte
+```
+
+- `ByteOffset` and `RuneOffset` are both the file offset.
+- The byte 0x0A ends a line, and `Column` counts the bytes since the last 0x0A.
+  A protocol that mixes text lines and binary fields keeps its line positions.
+- `Read`, `SpanText`, and `Context` return the raw input bytes.
+- `Seek`, `UnreadRune`, `Checkpoint`, `Reset`, `Remark`, and `WithMaxRetained`
+  work on file offsets. A checkpoint over n bytes retains n bytes.
+
+Before byte mode, binary input went through `NewRuneReader` with an adapter
+that maps each byte to a rune. The cursor stores those runes as UTF-8, so a byte
+of 0x80 or above takes two bytes in the buffer, and its offsets are not file
+offsets. Byte mode removes both effects.
+
 ## Important Limitations
 
 - **Seeking is limited to buffered data only.** Unlike `os.File.Seek()`, this
@@ -242,9 +280,9 @@ See `_examples/positioned-cursor` for a runnable program.
   the most recently read rune via `UnreadRune()`. Calling it twice in a row
   without an intermediate read will result in an error. Use `Seek()` for more
   flexible backward navigation.
-- **Position tracking assumes UTF-8 encoded text.** While the reader can
-  process any byte stream, the line and column counts will only be accurate for
-  valid UTF-8 text.
+- **Position tracking assumes UTF-8 encoded text** in the text constructors.
+  While they can process any byte stream, the line and column counts will only
+  be accurate for valid UTF-8 text. `NewByteReader` counts bytes instead.
 - **Column counts runes, Offset counts bytes.** `Column()` returns the number of
   Unicode characters (runes) since the last newline. `Offset()` returns the
   total number of bytes read from the stream.

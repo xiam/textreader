@@ -13,6 +13,15 @@
 // to the retained text and its surroundings; and a bounded retained-input
 // policy. See cursor.go. The cursor layer owns text-stream mechanics only. It
 // knows nothing about tokens, lexical rules, or longest-match selection.
+//
+// The text constructors (New, NewWithCapacity, NewReader, NewRuneReader) read
+// UTF-8 text. NewByteReader reads binary input instead: each byte is one rune of
+// size 1, so every position the reader reports is a file offset.
+//
+// Deprecated: use github.com/xiam/bytescan/cursor, which has the same API. To
+// migrate, change the import path github.com/xiam/textreader to
+// github.com/xiam/bytescan/cursor, and github.com/xiam/textreader/position to
+// github.com/xiam/bytescan/cursor/position. Rename TextReader to cursor.Reader.
 package textreader
 
 import (
@@ -50,6 +59,11 @@ type TextReader struct {
 	br io.Reader
 	// runeSrc is the rune source, used by NewRuneReader.
 	runeSrc io.RuneReader
+
+	// byteMode reads each input byte as one rune of size 1 (see
+	// NewByteReader). It is fixed at construction. In byte mode the UTF-8
+	// carry below is never used, and the rune offset equals the byte offset.
+	byteMode bool
 
 	mu sync.Mutex
 
@@ -131,6 +145,32 @@ func NewReader(r io.Reader, opts ...Option) *TextReader {
 func NewRuneReader(rr io.RuneReader, opts ...Option) *TextReader {
 	t := newTextReader(opts...)
 	t.runeSrc = rr
+	return t
+}
+
+// NewByteReader returns a new positioned cursor that reads each byte of r as
+// one rune, U+0000 to U+00FF, of size 1. It accepts the same options as
+// NewReader.
+//
+// In byte mode no input is decoded as UTF-8:
+//
+//   - ReadRune, ReadLocatedRune and PeekRune return rune(b) and size 1 for each
+//     byte b, including bytes of 0x80 and above and bytes that would form valid
+//     UTF-8 in text mode;
+//   - ByteOffset and RuneOffset of every Pos are both the file offset;
+//   - the byte 0x0A ends a line, and Column counts the bytes since the last
+//     0x0A;
+//   - Read, SpanText and Context return the raw input bytes;
+//   - Seek, UnreadRune, Checkpoint, Reset, Remark and WithMaxRetained work on
+//     file offsets, so a checkpoint over n bytes retains n bytes.
+//
+// Pos returns a position.Position that holds the same line, column and offset.
+// Its Scan method decodes UTF-8, so a caller that scans more input on that
+// copy gets text-mode columns for the scanned bytes.
+func NewByteReader(r io.Reader, opts ...Option) *TextReader {
+	t := newTextReader(opts...)
+	t.br = r
+	t.byteMode = true
 	return t
 }
 
@@ -393,6 +433,12 @@ func (t *TextReader) trimLines() {
 // column contribution is credited once the sequence completes. That keeps rune
 // coordinates exact when a byte read splits a rune.
 func (t *TextReader) accountBytes(b []byte) {
+	if t.byteMode {
+		t.scanLocked(b)
+		t.runeOffset += len(b)
+		return
+	}
+
 	if t.utf8CarryLen > 0 {
 		need := encodedLeadLen(t.utf8Carry[0])
 
@@ -430,6 +476,46 @@ func (t *TextReader) accountBytes(b []byte) {
 		copy(t.utf8Carry[:], b[i:])
 		t.utf8CarryLen = len(b) - i
 	}
+}
+
+// scanLocked advances the logical position over b, which continues the stream
+// at the position. It updates the line, column and byte offset, not the rune
+// offset. In text mode b is decoded as UTF-8. In byte mode each byte counts as
+// one rune.
+func (t *TextReader) scanLocked(b []byte) {
+	if !t.byteMode {
+		t.pos.Scan(b)
+		return
+	}
+
+	// position.Position.Scan decodes UTF-8, and it decodes a byte that does not
+	// start a complete, valid sequence as utf8.RuneError of size 1. Only the
+	// bytes 0xC2 to 0xF4 can start a valid multibyte sequence. Each segment
+	// below ends at the first such byte, which has no byte after it in the
+	// segment. So Scan counts every byte of the segment as one rune, and the
+	// position API needs no byte-mode variant.
+	for len(b) > 0 {
+		i := 0
+		for i < len(b) {
+			c := b[i]
+			i++
+			if c >= 0xC2 && c <= 0xF4 {
+				break
+			}
+		}
+		t.pos.Scan(b[:i])
+		b = b[i:]
+	}
+}
+
+// runeLookahead reports how many bytes a rune read asks the buffer for: one in
+// byte mode, a maximal UTF-8 rune otherwise. Byte mode never waits on the
+// source for bytes it does not need.
+func (t *TextReader) runeLookahead() int {
+	if t.byteMode {
+		return 1
+	}
+	return utf8.UTFMax
 }
 
 // flushCarry credits a carried incomplete sequence as if it had been decoded on
@@ -483,7 +569,7 @@ func (t *TextReader) readRuneLocked() (LocatedRune, error) {
 
 	// Try to fill the buffer with at least enough bytes for a maximal rune.
 	// We can tolerate an io.EOF here, as we might have a partial buffer to read from.
-	_, err := t.fillAtLeast(utf8.UTFMax)
+	_, err := t.fillAtLeast(t.runeLookahead())
 	if err != nil && !errors.Is(err, io.EOF) {
 		return LocatedRune{}, err
 	}
@@ -493,10 +579,19 @@ func (t *TextReader) readRuneLocked() (LocatedRune, error) {
 		return LocatedRune{}, io.EOF
 	}
 
-	// Let utf8.DecodeRune handle all cases: valid ASCII, valid multi-byte,
-	// and invalid UTF-8 sequences.
-	// If the sequence is invalid, it returns (utf8.RuneError, 1).
-	r, size := utf8.DecodeRune(t.buf[t.r:t.w])
+	// In byte mode every byte is one rune of size 1. Otherwise let
+	// utf8.DecodeRune handle all cases: valid ASCII, valid multi-byte, and
+	// invalid UTF-8 sequences. If the sequence is invalid, it returns
+	// (utf8.RuneError, 1).
+	var (
+		r    rune
+		size int
+	)
+	if t.byteMode {
+		r, size = rune(t.buf[t.r]), 1
+	} else {
+		r, size = utf8.DecodeRune(t.buf[t.r:t.w])
+	}
 
 	// The retention budget bounds the retained region, so it is enforced where
 	// the logical cursor would advance. A rune larger than the remaining budget
@@ -559,13 +654,17 @@ func (t *TextReader) PeekRune() (LocatedRune, error) {
 
 	t.lastRuneSize = -1
 
-	_, err := t.fillAtLeast(utf8.UTFMax)
+	_, err := t.fillAtLeast(t.runeLookahead())
 	if err != nil && !errors.Is(err, io.EOF) {
 		return LocatedRune{}, err
 	}
 
 	if t.r >= t.w {
 		return LocatedRune{}, io.EOF
+	}
+
+	if t.byteMode {
+		return LocatedRune{r: rune(t.buf[t.r]), size: 1, pos: t.cursorLocked()}, nil
 	}
 
 	r, size := utf8.DecodeRune(t.buf[t.r:t.w])
@@ -780,8 +879,8 @@ func (t *TextReader) Seek(offset int64, whence int) (int64, error) {
 			return 0, ErrSeekOutOfBuffer
 		}
 
-		t.pos.Scan(t.buf[t.r : t.r+relInt])
-		t.runeOffset += utf8.RuneCount(t.buf[t.r : t.r+relInt])
+		t.scanLocked(t.buf[t.r : t.r+relInt])
+		t.runeOffset += t.runeCount(t.buf[t.r : t.r+relInt])
 		t.r += relInt
 
 	} else { // Seeking Backward
@@ -789,7 +888,7 @@ func (t *TextReader) Seek(offset int64, whence int) (int64, error) {
 			return 0, ErrSeekOutOfBuffer
 		}
 		// Count runes in the slice we're rewinding over
-		runeCount := utf8.RuneCount(t.buf[newRInt:t.r])
+		runeCount := t.runeCount(t.buf[newRInt:t.r])
 		if err := t.pos.Rewind(-relInt, runeCount); err != nil {
 			return 0, fmt.Errorf("pos.Rewind: %w", err)
 		}
@@ -803,6 +902,15 @@ func (t *TextReader) Seek(offset int64, whence int) (int64, error) {
 	t.lastRuneSize = -1
 
 	return int64(t.pos.Offset()), nil
+}
+
+// runeCount reports how many runes the reader counts in b: one per byte in byte
+// mode, the UTF-8 rune count otherwise.
+func (t *TextReader) runeCount(b []byte) int {
+	if t.byteMode {
+		return len(b)
+	}
+	return utf8.RuneCount(b)
 }
 
 // Pos returns a copy of the reader's current position (line, column, and
